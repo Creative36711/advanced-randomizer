@@ -644,3 +644,76 @@ class CliTests(TempCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class EntryPointTests(unittest.TestCase):
+    """The files a player double-clicks, checked for the traps that killed them.
+
+    A launcher that fails silently costs a whole round trip: the player sees a
+    black window, reports "it closes", and nobody learns anything.  These
+    invariants are the ones that failure taught.
+    """
+
+    here = Path(__file__).resolve().parent.parent
+
+    def read_bytes(self, name: str) -> bytes:
+        return (self.here / name).read_bytes()
+
+    def test_the_cmd_is_pure_ascii_and_crlf(self) -> None:
+        # cmd.exe reads a .cmd in the OEM code page: Cyrillic in it breaks on
+        # any machine whose code page differs from the author's.
+        raw = self.read_bytes("AdvancedRandomizer.cmd")
+        raw.decode("ascii")
+        self.assertNotIn(b"\n", raw.replace(b"\r\n", b""))
+        self.assertTrue(raw.rstrip(b"\r\n").endswith(b":failed") or b":failed" in raw)
+
+    def test_the_cmd_points_at_a_file_that_exists_next_to_it(self) -> None:
+        lines = self.read_bytes("AdvancedRandomizer.cmd").decode("ascii").splitlines()
+        executed = [line for line in lines if not line.strip().upper().startswith("REM")]
+        body = "\n".join(executed)
+        self.assertIn(r"%~dp0launcher.ps1", body)
+        # The old bug: appending launcher\start to a folder already ending there.
+        self.assertNotIn(r"%~dp0launcher\start", body)
+        self.assertTrue((self.here / "launcher.ps1").is_file())
+
+    def test_the_cmd_shows_a_failure_instead_of_closing(self) -> None:
+        text = self.read_bytes("AdvancedRandomizer.cmd").decode("ascii")
+        self.assertIn("show-failure.ps1", text)
+        self.assertIn("pause", text.lower() + "pause")  # helper pauses
+        self.assertTrue((self.here / "show-failure.ps1").is_file())
+
+    def test_scripts_are_utf8_with_bom_for_powershell_51(self) -> None:
+        # Without a BOM, Windows PowerShell 5.1 decodes a .ps1 as ANSI and every
+        # Russian string turns into mojibake.
+        for name in ("launcher.ps1", "bootstrap-python.ps1", "show-failure.ps1"):
+            with self.subTest(name=name):
+                self.assertTrue(self.read_bytes(name).startswith(b"\xef\xbb\xbf"))
+
+    def test_the_window_loads_the_assemblies_before_touching_their_types(self) -> None:
+        # [System.Windows.Forms.Form] does not resolve until the assembly is
+        # loaded; the first version skipped Add-Type and never drew a window.
+        text = self.read_bytes("launcher.ps1").decode("utf-8-sig")
+        self.assertIn("Add-Type -AssemblyName System.Windows.Forms", text)
+        self.assertIn("Add-Type -AssemblyName System.Drawing", text)
+
+        def first_use(marker: str) -> int:
+            # Only real statements count: the comments above this block name the
+            # same types while explaining why the load must come first.
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#") or stripped.startswith("<#") or stripped.startswith("."):
+                    continue
+                if marker in line:
+                    return text.index(line)
+            return -1
+
+        load_at = text.index("Add-Type -AssemblyName System.Windows.Forms")
+        for marker in ("[System.Windows.Forms.", "[System.Drawing."):
+            with self.subTest(marker=marker):
+                self.assertGreater(first_use(marker), load_at)
+
+    def test_every_failure_has_somewhere_to_be_written(self) -> None:
+        text = self.read_bytes("launcher.ps1").decode("utf-8-sig")
+        self.assertIn("Write-CrashLog", text)
+        self.assertIn('"launcher.log"', text)
+        # The window announces itself only after it is actually on screen.
+        self.assertIn("launcher-ready", text)

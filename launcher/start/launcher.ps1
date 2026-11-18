@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Advanced Randomizer: one window, one button, no console.
 
@@ -22,6 +22,41 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# ---------------------------------------------------------------------------
+# Crash log FIRST: until this file exists, nothing below can report anything,
+# and a windowed process has no console to print to.
+# ---------------------------------------------------------------------------
+$stateDir = Join-Path $env:LOCALAPPDATA "AdvancedRandomizer"
+New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+$script:crashLog = Join-Path $stateDir "launcher.log"
+$script:readyFile = Join-Path $stateDir "launcher-ready"
+
+try {
+    Remove-Item -LiteralPath $script:crashLog -Force -ErrorAction SilentlyContinue
+} catch { }
+
+function Write-CrashLog {
+    param([string]$Text)
+    try {
+        # UTF-8 with BOM so Notepad and `type` both show Cyrillic correctly.
+        $encoding = New-Object System.Text.UTF8Encoding($true)
+        [System.IO.File]::AppendAllText($script:crashLog, $Text + [Environment]::NewLine, $encoding)
+    } catch { }
+}
+
+# WinForms and System.Drawing are ASSEMBLIES, not namespaces: on Windows
+# PowerShell 5.1 `[System.Windows.Forms.Form]` and `[System.Drawing.Color]`
+# do not resolve until they are loaded.  Loading them was missing here, so the
+# very first form line threw and the window never appeared.
+try {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+} catch {
+    Write-CrashLog "Не удалось загрузить System.Windows.Forms/System.Drawing: $($_.Exception.Message)"
+    exit 1
+}
+
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 # Russian text out of Python must survive a redirected stream.
@@ -101,34 +136,57 @@ function Get-PinnedPythonPath {
 }
 
 function Get-PythonVersion {
-    # `"$env:TEMP\ar-pyver.txt"` leaves a stray backslash before the quote.
     param([string]$Exe)
+    $result = Invoke-Quiet -Exe $Exe -CommandArguments @("-c", "import sys; print('%d.%d' % sys.version_info[:2])")
+    if ($result.Code -ne 0) { return "" }
+    return $result.Stdout
+}
+
+function Invoke-Quiet {
+    # Runs a command line with output to temp files and returns its exit code,
+    # the stdout text and the stderr text.  Never throws.
+    param([string]$Exe, [string[]]$CommandArguments)
     $handle = [Guid]::NewGuid().ToString("N")
     $out = Join-Path ([IO.Path]::GetTempPath()) "$handle.txt"
     $err = Join-Path ([IO.Path]::GetTempPath()) "$handle.err"
-    $arguments = @{
-        FilePath = $Exe
-        ArgumentList = @("-c", "import sys; print('%d.%d' % sys.version_info[:2])")
-        WindowStyle = "Hidden"
-        Wait = $true
-        RedirectStandardOutput = $out
-        RedirectStandardError = $err
-    }
     try {
+        $arguments = @{
+            FilePath = $Exe
+            ArgumentList = $CommandArguments
+            WindowStyle = "Hidden"
+            Wait = $true
+            RedirectStandardOutput = $out
+            RedirectStandardError = $err
+        }
         Start-Process @arguments | Out-Null
-        if (-not (Test-Path -LiteralPath $out -PathType Leaf)) { return "" }
-        return (Get-Content -LiteralPath $out -Raw).Trim()
+        $stdout = if (Test-Path -LiteralPath $out -PathType Leaf) { (Get-Content -LiteralPath $out -Raw) } else { "" }
+        $stderr = if (Test-Path -LiteralPath $err -PathType Leaf) { (Get-Content -LiteralPath $err -Raw) } else { "" }
+        return @{ Code = 0; Stdout = ([string]$stdout).Trim(); Stderr = ([string]$stderr).Trim() }
     } catch {
-        return ""
+        return @{ Code = -1; Stdout = ""; Stderr = $_.Exception.Message }
     } finally {
         Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue
     }
+}
+
+function Test-InterpreterWorks {
+    # The engine's CLI prints `{}`-parseable JSON for `status`; if `--help`
+    # exits 0 the interpreter is usable, whatever its exact version.
+    param([string]$Exe)
+    if ([string]::IsNullOrWhiteSpace($Exe)) { return $false }
+    $result = Invoke-Quiet -Exe $Exe -CommandArguments @("-E", "-s", "-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)")
+    return ($result.Code -eq 0)
 }
 
 function Ensure-BootstrapPython {
     # The launcher's own interpreter for running the engine before an install
     # root exists.  It is the same pinned build the importer demands, so the
     # engine never runs on a Python that would later be refused.
+    # Setting PYTHONHOME or PYTHONPATH globally (some game mods do) breaks any
+    # interpreter the launcher inherits, so both are cleared for the engine.
+    Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+    Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+
     $candidates = @()
     if (-not [string]::IsNullOrWhiteSpace($EnginePython)) { $candidates += $EnginePython }
     if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
@@ -145,17 +203,35 @@ function Ensure-BootstrapPython {
         if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $candidate }
     }
 
-    # Someone already has a working 3.12: use it instead of downloading one.
+    # Any interpreter the engine can actually run on, before downloading one.
+    # The engine is standard-library only on purpose, so pinning the launcher
+    # itself to one exact build would buy nothing but a failure mode: the
+    # download host is reachable for some players and not for others.
+    $candidates = @()
     $system = Get-Command python.exe -ErrorAction SilentlyContinue
-    if ($null -ne $system -and (Get-PythonVersion -Exe $system.Source) -eq "3.12") {
-        return $system.Source
+    if ($null -ne $system) { $candidates += $system.Source }
+    $py = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($null -ne $py) { $candidates += $py.Source }
+    foreach ($candidate in $candidates) {
+        if (Test-InterpreterWorks -Exe $candidate) { return $candidate }
     }
 
+    # Last resort: fetch the pinned build.  When this fails the message names
+    # the URL and the folder, so the file can be brought by hand.
+    Write-Log "Python 3.9+ не найден. Скачиваю закреплённую сборку 3.12.13…"
+
     $script = Join-Path $PSScriptRoot "bootstrap-python.ps1"
-    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script -Destination $bootstrapRoot -Quiet | Out-Null
+    $output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script -Destination $bootstrapRoot -Quiet 2>&1
+    foreach ($line in @($output)) {
+        if ($line) { Write-Log ([string]$line) }
+    }
     $installed = Get-PinnedPythonPath -Root $bootstrapRoot
     if (-not (Test-Path -LiteralPath $installed -PathType Leaf)) {
-        throw "Не удалось подготовить Python для лаунчера: $installed"
+        $message = "Не удалось получить Python, на котором работает лаунчер."
+        Write-Log $message
+        Write-Log "Можно поставить Python 3.12 вручную с https://www.python.org/downloads/ и запустить лаунчер снова —"
+        Write-Log "он возьмёт системный Python, если тот 3.9 или новее."
+        throw $message
     }
     return $installed
 }
@@ -164,6 +240,7 @@ function Ensure-BootstrapPython {
 # ---------------------------------------------------------------------------
 # Window
 # ---------------------------------------------------------------------------
+try {
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Advanced Randomizer"
 $form.Size = New-Object System.Drawing.Size(940, 700)
@@ -279,7 +356,7 @@ function Write-Log {
 }
 
 function Read-NewLogLines {
-    param($Reader, [string]$Trim = $false)
+    param($Reader)
     if ($null -eq $Reader) { return }
     while ($null -ne ($line = $Reader.ReadLine())) {
         if ($line.Trim().Length -gt 0) { Write-Log $line }
@@ -315,6 +392,16 @@ function Invoke-Engine {
         }
         $process = Start-Process @startArgs
 
+        # The child may not have created its log yet; wait for it instead of
+        # letting FileMode::Open throw while the console window is hidden.
+        $waited = 0
+        while (-not (Test-Path -LiteralPath $logFile -PathType Leaf) -and -not $process.HasExited -and $waited -lt 100) {
+            Start-Sleep -Milliseconds 100
+            [System.Windows.Forms.Application]::DoEvents()
+            $waited += 1
+        }
+        if (-not (Test-Path -LiteralPath $logFile -PathType Leaf)) { New-Item -ItemType File -Path $logFile -Force | Out-Null }
+
         $stream = New-Object System.IO.FileStream($logFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
         $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
 
@@ -333,6 +420,11 @@ function Invoke-Engine {
             }
         }
         return $process.ExitCode
+    } catch {
+        Write-Log ("Ошибка: " + $_.Exception.Message)
+        Write-CrashLog ("Ошибка движка: " + $_.Exception.Message)
+        Write-CrashLog ($_.ScriptStackTrace)
+        return 1
     } finally {
         if ($reader) { $reader.Dispose() }
         if ($stream) { $stream.Dispose() }
@@ -343,7 +435,12 @@ function Invoke-Engine {
 }
 
 function Read-Status {
-    $python = Ensure-BootstrapPython
+    try {
+        $python = Ensure-BootstrapPython
+    } catch {
+        Write-Log ("Нет Python для лаунчера: " + $_.Exception.Message)
+        return $null
+    }
     $logFile = Join-Path ([IO.Path]::GetTempPath()) ("advanced-randomizer-status-" + [Guid]::NewGuid().ToString("N") + ".json")
     try {
         $statusArgs = @{
@@ -411,7 +508,7 @@ function Refresh-Status {
         Set-FieldText -Tag "seed" -Value $info.seed
     }
 
-    $full.Visible = [bool]$info.canFullRotwk
+    $full.Visible = $info.canFullRotwk
 
     if ($info.ready) {
         $statusLabel.Text = "Готово к игре. Seed: $($info.seed). Пак: $($info.activePack)"
@@ -484,13 +581,27 @@ $full.Add_Click({
 
 $form.Add_Shown({
     Write-Log "Advanced Randomizer. Это окно можно свернуть: процесс продолжится."
-    Refresh-Status
+    # The .cmd waits for this file; creating it means "the window is really up".
+    try { Set-Content -LiteralPath $script:readyFile -Value "ok" -Encoding ASCII } catch { }
+    try {
+        Refresh-Status
+    } catch {
+        Write-Log ("Не удалось прочитать состояние: " + $_.Exception.Message)
+    }
 })
 
 try {
     [void]$form.ShowDialog()
 } catch {
-    $message = $_.Exception.Message
-    [System.Windows.Forms.MessageBox]::Show("Лаунчер столкнулся с ошибкой:`n$message", "Advanced Randomizer") | Out-Null
+    Write-CrashLog ("Ошибка окна: " + $_.Exception.Message)
+    Write-CrashLog ($_.ScriptStackTrace)
+    [System.Windows.Forms.MessageBox]::Show("Лаунчер столкнулся с ошибкой:`n$($_.Exception.Message)`n`nПодробности: $script:crashLog", "Advanced Randomizer") | Out-Null
+    exit 1
+}
+} catch {
+    Write-CrashLog ("Ошибка при создании окна: " + $_.Exception.Message)
+    Write-CrashLog ($_.ScriptStackTrace)
+    Write-CrashLog ""
+    Write-CrashLog ("Строка: " + $_.InvocationInfo.PositionMessage)
     exit 1
 }

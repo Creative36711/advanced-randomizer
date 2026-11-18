@@ -1,2 +1,8 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# The launcher's Windows entry points: keep the exact bytes they must have.
+# cmd.exe reads the .cmd in an OEM code page (it is ASCII on purpose) and
+# Windows PowerShell 5.1 needs the .ps1 files to start with a UTF-8 BOM.
+*.cmd           text eol=crlf
+launcher/start/*.ps1 text eol=crlf
