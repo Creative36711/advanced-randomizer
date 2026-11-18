@@ -895,28 +895,152 @@ class ReleaseTests(unittest.TestCase):
     def test_the_workflow_trigger_shape_is_one_github_accepts(self) -> None:
         # `tags:` at the same level as `push:` is not a valid event, and GitHub
         # rejects the whole workflow before running a single step - which looks
-        # exactly like a compiler failure from the outside.
-        import yaml
-
+        # exactly like a compiler failure from the outside.  Parsed by hand on
+        # purpose: the test suite must run with the standard library only.
         workflow = (self.ROOT / ".github" / "workflows" / "launcher-release.yml").read_text(
             encoding="utf-8"
         )
-        document = yaml.safe_load(workflow)
-        events = document.get("on", document.get(True))
         # The commit step cannot push from a tag build (detached HEAD).
         self.assertIn("github.ref_type == 'branch'", workflow)
-        self.assertIn("push", events)
-        self.assertIn("tags", events["push"])
-        self.assertIn("branches", events["push"])
-        for key in events:
-            self.assertIn(
-                key,
-                {"push", "workflow_dispatch", "pull_request", "schedule"},
-                f"unexpected trigger {key}",
-            )
+
+        start = workflow.index("\non:")
+        end = workflow.index("\npermissions:")
+        events_block = workflow[start:end]
+        toplevel = [
+            line for line in events_block.splitlines()
+            if line and not line.startswith(" ") and line.strip() != "on:"
+        ]
+        self.assertEqual(toplevel, [], f"keys beside the triggers: {toplevel}")
+
+        self.assertIn("  push:", events_block)
+        push_block = events_block[events_block.index("  push:"):]
+        push_block = push_block[: push_block.index("\n  workflow_dispatch:")]
+        self.assertIn("tags:", push_block, "tags must be nested under push")
+        self.assertIn("branches:", push_block)
+        allowed = {"push", "workflow_dispatch", "pull_request", "schedule"}
+        for line in events_block.splitlines():
+            if line.startswith("  ") and not line.startswith("    ") and line.strip().endswith(":"):
+                event = line.strip().rstrip(":")
+                self.assertIn(event, allowed, f"unexpected trigger {event}")
 
     def test_the_readme_names_the_exe_in_the_repository_root(self) -> None:
         readme = (self.ROOT / "README.md").read_text(encoding="utf-8")
         section = readme[readme.index("## Играть"):]
         self.assertIn("AdvancedRandomizer.exe", section)
         self.assertIn("AdvancedRandomizer.cmd", section)
+
+class ArgumentQuotingTests(unittest.TestCase):
+    """Start-Process -ArgumentList joins an array with spaces and quotes nothing.
+
+    The player's install folder was C:/Users/Creative/Advanced Randomizer
+    (with a space); the engine received "Randomizer" as a separate argument and
+    answered "unrecognized arguments: Randomizer".
+    """
+
+    def quote(self, value: str) -> str:
+        """The rule implemented in Quote-Argument, mirrored here."""
+        if value == "":
+            return '""'
+        if value and not any(ch.isspace() or ch == '"' for ch in value):
+            return value
+        out = ['"']
+        backslashes = 0
+        for ch in value:
+            if ch == "\\":
+                backslashes += 1
+                continue
+            if ch == '"':
+                out.append("\\" * (2 * backslashes + 1) + '"')
+                backslashes = 0
+                continue
+            if backslashes:
+                out.append("\\" * backslashes)
+                backslashes = 0
+            out.append(ch)
+        if backslashes:
+            out.append("\\" * (2 * backslashes))
+        out.append('"')
+        return "".join(out)
+
+    def split(self, line: str) -> list:
+        """CommandLineToArgvW, so the test fails if the quoting is wrong."""
+        args, current, i, in_quotes, content = [], [], 0, False, False
+        while i < len(line):
+            ch = line[i]
+            if ch == "\\":
+                n, j = 0, i
+                while j < len(line) and line[j] == "\\":
+                    n, j = n + 1, j + 1
+                if j < len(line) and line[j] == '"':
+                    current.append("\\" * (n // 2))
+                    if n % 2 == 1:
+                        current.append('"')
+                        j += 1
+                    content = True
+                    i = j
+                    continue
+                current.append("\\" * n)
+                content = True
+                i = j
+                continue
+            if ch == '"':
+                if in_quotes and i + 1 < len(line) and line[i + 1] == '"':
+                    current.append('"')
+                    i += 2
+                    content = True
+                    continue
+                in_quotes = not in_quotes
+                content = True
+                i += 1
+                continue
+            if ch in " \t" and not in_quotes:
+                if content:
+                    args.append("".join(current))
+                    current, content = [], False
+                i += 1
+                continue
+            current.append(ch)
+            content = True
+            i += 1
+        if content:
+            args.append("".join(current))
+        return args
+
+    def test_a_folder_with_a_space_survives_the_round_trip(self) -> None:
+        arguments = [
+            "set",
+            "--install-root", "C:\\Users\\Creative\\Advanced Randomizer",
+            "--bfme2-install", "C:\\BFME2",
+            "--rotwk-install", "C:\\RotWK",
+            "--seed", "Arda",
+        ]
+        line = " ".join(self.quote(a) for a in arguments)
+        self.assertEqual(self.split(line), arguments)
+
+    def test_awkward_paths_round_trip(self) -> None:
+        for case in (
+            "C:\\Program Files (x86)\\Games\\BFME2",
+            "D:\\Games\\BFME 2\\",
+            'C:\\path\\with"quote',
+            "Arda",
+            "",
+        ):
+            with self.subTest(case=case):
+                self.assertEqual(self.split(self.quote(case)), [case])
+
+    def test_the_window_actually_quotes_its_arguments(self) -> None:
+        text = self.window().read_text(encoding="utf-8-sig")
+        self.assertIn("function Quote-Argument", text)
+        self.assertIn("function Join-Arguments", text)
+        # No Start-Process may receive a raw array.
+        for line in text.splitlines():
+            if "ArgumentList" in line and "=" in line:
+                self.assertNotRegex(
+                    line,
+                    r"ArgumentList\s*=\s*\$(CommandArguments|Arguments)\b",
+                    f"unquoted argument array: {line.strip()}",
+                )
+
+    @staticmethod
+    def window() -> Path:
+        return Path(__file__).resolve().parent.parent / "launcher.ps1"

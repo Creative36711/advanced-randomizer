@@ -173,7 +173,9 @@ function Invoke-Quiet {
     try {
         $arguments = @{
             FilePath = $Exe
-            ArgumentList = $CommandArguments
+            # Same quoting rule as Invoke-Engine: python.exe lives under a path
+            # that can contain spaces.
+            ArgumentList = (Join-Arguments $CommandArguments)
             WindowStyle = "Hidden"
             Wait = $true
             RedirectStandardOutput = $out
@@ -391,6 +393,49 @@ function Read-NewLogLines {
     }
 }
 
+function Quote-Argument {
+    # Start-Process -ArgumentList joins an array with single spaces and adds NO
+    # quoting, so a path such as C:\Users\Creative\Advanced Randomizer becomes
+    # two arguments ("unrecognized arguments: Randomizer" was exactly this).
+    # ProcessStartInfo.ArgumentList is not available in .NET Framework 4.8
+    # either, so the quoting has to be done here, following the same rules
+    # CommandLineToArgvW uses to split it again.
+    param([string]$Value)
+    if ($null -eq $Value) { return '""' }
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.Append('"')
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq [char]'\') {
+            $backslashes += 1
+            continue
+        }
+        if ($character -eq [char]'"') {
+            # 2n+1 backslashes then a quote -> n backslashes and a literal quote.
+            [void]$builder.Append([string]::new([char]'\', 2 * $backslashes + 1))
+            [void]$builder.Append('"')
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) {
+            [void]$builder.Append([string]::new([char]'\', $backslashes))
+            $backslashes = 0
+        }
+        [void]$builder.Append($character)
+    }
+    if ($backslashes -gt 0) {
+        [void]$builder.Append([string]::new([char]'\', 2 * $backslashes))
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Join-Arguments {
+    param([string[]]$Values)
+    return (($Values | ForEach-Object { Quote-Argument $_ }) -join ' ')
+}
+
 function Invoke-Engine {
     param([string[]]$Arguments)
 
@@ -411,14 +456,14 @@ function Invoke-Engine {
 
     try {
         $python = Ensure-BootstrapPython
-        $all = @($python, $engine) + $Arguments
-        Write-Log ("> " + ($all -join " "))
+        $argumentLine = Join-Arguments (@($engine) + $Arguments)
+        Write-Log ("> " + $python + " " + $argumentLine)
 
-        # Array splatting, not one rebuilt string: every argument keeps its own
-        # boundary, so a path with a space cannot turn into two arguments.
+        # -ArgumentList takes ONE string and joins arrays without quoting, so the
+        # string is built here with explicit quoting instead.
         $startArgs = @{
             FilePath = $python
-            ArgumentList = @($engine) + $Arguments
+            ArgumentList = $argumentLine
             WorkingDirectory = $repoRoot
             WindowStyle = "Hidden"
             PassThru = $true
@@ -495,7 +540,7 @@ function Read-Status {
         }
         $statusArgs = @{
             FilePath = $python
-            ArgumentList = $argumentList
+            ArgumentList = (Join-Arguments $argumentList)
             WorkingDirectory = $repoRoot
             WindowStyle = "Hidden"
             Wait = $true
