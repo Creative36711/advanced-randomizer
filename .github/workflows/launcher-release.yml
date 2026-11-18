@@ -28,32 +28,39 @@ jobs:
       - name: Compile AdvancedRandomizer.exe
         shell: pwsh
         run: |
-          # Windows ships the .NET Framework at 4.0.30319, and csc.exe there is
-          # a C# 5 compiler: newer syntax such as string interpolation fails
-          # with "CS1056 unexpected character '$'".  Program.cs is written to
-          # that vintage on purpose (no $"", no ?., no nameof).
+          # The job log host is not reachable from every environment, so the
+          # compiler's own words are emitted as ::error:: annotations: those are
+          # readable through the checks API even when the log is not.
+          $ErrorActionPreference = 'Continue'
           $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
           if (-not (Test-Path -LiteralPath $csc)) {
             $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe'
           }
           Write-Host "using compiler: $csc"
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          # The /r: and /out: flags need an unquoted value, and Windows C#
-          # cannot use a leading "./" on the source path: Build-Error 1508.
-          # Absolute paths avoid the parsing ambiguity entirely.
+          if (-not (Test-Path -LiteralPath $csc)) {
+            Write-Host "::error::csc.exe not found at $csc"
+            exit 1
+          }
           $here = (Get-Location).Path
           $source = Join-Path $here 'launcher\build\Program.cs'
           $output = Join-Path $here 'dist\AdvancedRandomizer.exe'
+          New-Item -ItemType Directory -Force -Path (Join-Path $here 'dist') | Out-Null
           Write-Host "source: $source"
           Write-Host "output: $output"
-          if (-not (Test-Path -LiteralPath $source)) { throw 'Program.cs is missing from the checkout' }
-          & $csc /nologo /target:winexe /optimize+ /r:System.dll /r:System.Windows.Forms.dll "/out:$output" $source
-          Write-Host "csc exit code: $LASTEXITCODE"
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host '--- first errors ---'
-            exit $LASTEXITCODE
+          $text = & $csc /nologo /target:winexe /r:System.dll /r:System.Windows.Forms.dll "/out:$output" $source 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $text
+          if ($code -ne 0) {
+            $first = ($text -split "`n" | Where-Object { $_ -match 'error|fatal' } | Select-Object -First 5) -join ' | '
+            if (-not $first) { $first = ($text -split "`n" | Select-Object -First 5) -join ' | ' }
+            Write-Host "::error::csc exit ${code}: $first"
+            exit $code
           }
-          Get-Item dist/AdvancedRandomizer.exe | Format-List Name, Length
+          if (-not (Test-Path -LiteralPath $output)) {
+            Write-Host "::error::csc reported success but $output is missing"
+            exit 1
+          }
+          Get-Item $output | Format-List Name, Length
 
       - name: Assemble the player's download
         shell: pwsh
