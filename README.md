@@ -11,6 +11,8 @@ godot --headless --path build/openbfme/game --script res://tests/command_set_upg
 ```
 
 Нужны Python 3.9+, Git и Godot 4.7.2.
+Пошаговая инструкция для игрока (сборка → конвертация своих файлов → запуск режима):
+**[docs/RUNNING.md](docs/RUNNING.md)**.
 Для игры — принадлежащие вам BFME2 1.06, RotWK 2.01 + Patch 2.02 v9.7.7 и
 сконвертированные карты/фракции: см. `build/openbfme/README.md` и импортёр в этом
 же дереве. Собирайте и запускайте **из этого дерева**, а не из незатронутого upstream.
