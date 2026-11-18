@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import functools
 import hashlib
+import math
 import json
 import os
 from pathlib import Path
@@ -44,6 +45,9 @@ import zipfile
 
 from pinned import (
     CONTENT_PACKS_RELATIVE,
+    SEVEN_ZR,
+    FFMPEG_7Z,
+    FFMPEG_8_1_1_ZIP,
     FFMPEG_EXE_SHA256,
     FFMPEG_URL_CANDIDATES,
     FFPROBE_EXE_SHA256,
@@ -51,6 +55,7 @@ from pinned import (
     MINGIT_64_ZIP,
     OPENBFME_SOURCE_RELATIVE,
     PINNED_PYTHON,
+    SEVEN_ZR,
 )
 
 APP_NAME = "AdvancedRandomizer"
@@ -283,8 +288,22 @@ class Progress:
     def start(self, label: str) -> None:
         self._emit({"kind": "begin", "label": label})
 
-    def update(self, label: str, done: int, total: int = 0) -> None:
-        self._emit({"kind": "progress", "label": label, "done": int(done), "total": int(total)})
+    def update(self, label: str, done: int, total: int = 0, *, rate: float = 0.0) -> None:
+        self._emit({
+            "kind": "progress",
+            "label": label,
+            "done": int(done),
+            "total": int(total),
+            # Bytes per second and the remaining seconds let the window say
+            # "3.2 МБ/с, ещё ~1 мин" instead of only a moving bar - the player
+            # asked to know whether the download is really going.
+            "rate": int(rate),
+            # Rounded UP: 0.6 s of remaining download is still time left, and
+            # flooring it to 0 read as "finished" on screen.
+            "eta": (
+                math.ceil((total - done) / rate) if rate > 0 and total > done else 0
+            ),
+        })
 
     def finish(self, label: str) -> None:
         self._emit({"kind": "end", "label": label})
@@ -370,8 +389,14 @@ def download(
                             f"{label}: сервер отдал больше {human_bytes(expected_size)}; "
                             "загрузка прервана."
                         )
+                    # From the first block: a rate that only appears after
+                    # half a second leaves the first, most anxious moments
+                    # blank - and it is exactly when the player is wondering
+                    # whether anything is happening.
+                    elapsed = time.monotonic() - started
+                    rate = written / elapsed if elapsed > 0.0 else 0.0
                     if total:
-                        progress.update(label, written, total)
+                        progress.update(label, written, total, rate=rate)
                         # A text line every 16 MiB as well: the window shows a
                         # bar, but a terminal run and the log file need words.
                         if written % (16 * 1024 * 1024) < len(block):
@@ -381,7 +406,7 @@ def download(
                         # with no total draws only a marquee, so the player
                         # sees "nothing is happening".  Print bytes every
                         # 4 MiB and report a growing figure instead.
-                        progress.update(label, written, 0)
+                        progress.update(label, written, 0, rate=rate)
                         if written % (4 * 1024 * 1024) < len(block):
                             echo(f"  скачано {human_bytes(written)}")
     except DownloadError:
@@ -440,6 +465,89 @@ def extract_zip(archive: Path, destination: Path, *, label: str = "") -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(info) as source, target.open("wb") as out:
                 shutil.copyfileobj(source, out)
+
+
+def seven_zr_path(directory: Path) -> Path:
+    return directory / "7zr.exe"
+
+
+def extract_7z(archive: Path, destination: Path, *, label: str = "", echo=print) -> None:
+    """Unpack a .7z with what the machine already has.
+
+    The FFmpeg build is a third the size packed as 7z, but Windows has no
+    standard-library reader for it.  Three routes, in order of availability:
+
+    1. ``py7zr`` when it is importable (installed by hand by a player, or
+       present in the launcher's own environment);
+    2. ``tar.exe`` - Windows 10 1803+ ships bsdtar, which reads 7z;
+    3. nothing: raise with the exact command to run by hand, because a
+       launcher that silently gives up is the failure mode being fixed.
+
+    Extraction is a copy into our own staging folder, so the archive never
+    decides where files go: the caller only reads specific names afterwards.
+    """
+
+    destination.mkdir(parents=True, exist_ok=True)
+    label = label or archive.name
+
+    try:
+        import py7zr  # type: ignore
+    except ImportError:
+        py7zr = None
+
+    if py7zr is not None:
+        with py7zr.SevenZipFile(archive, "r") as archive_file:
+            names = archive_file.getnames()
+            for name in names:
+                target = (destination / name).resolve()
+                if not str(target).startswith(str(destination.resolve())):
+                    raise LauncherError(
+                        f"{label}: архив пытается писать вне папки назначения."
+                    )
+        with py7zr.SevenZipFile(archive, "r") as archive_file:
+            archive_file.extractall(destination)
+        return
+
+    # bsdtar reads 7z; GNU tar does not.  Ask the tool instead of guessing
+    # from its name, because "tar exists" is not "tar can open this".
+    tar = shutil.which("tar")
+    if tar:
+        result = subprocess.run(
+            [tar, "-x", "-f", str(archive), "-C", str(destination)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and any(destination.rglob("*.exe")):
+            return
+
+    # Last resort, and the one that makes the small archive usable on a clean
+    # Windows: 600 KB of 7-Zip's own extractor, pinned by digest.
+    extractor = seven_zr_path(archive.parent)
+    if not extractor.is_file():
+        try:
+            download(
+                SEVEN_ZR.url,
+                extractor,
+                expected_sha256=SEVEN_ZR.sha256,
+                expected_size=SEVEN_ZR.size,
+                label=SEVEN_ZR.label,
+                echo=echo,
+            )
+        except LauncherError:
+            extractor = None
+    if extractor is not None and extractor.is_file():
+        result = subprocess.run(
+            [str(extractor), "x", "-y", f"-o{destination}", str(archive)],
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode == 0:
+            return
+
+    raise LauncherError(
+        f"{label}: .7z не открылся (нет py7zr, tar не читает 7z, 7zr.exe не скачался)."
+    )
 
 
 def extract_tar_gz(archive: Path, destination: Path, *, label: str = "") -> None:
@@ -945,19 +1053,102 @@ def git_environment(git: Path) -> dict[str, str]:
 
 
 def ensure_ffmpeg(settings: Settings, *, echo=print, opener=urllib.request.urlopen, progress=None) -> Path:
-    """Install the one ffmpeg build the importer will accept.
+    """Install the one FFmpeg build the importer will accept.
 
-    The archive may move upstream, so it is not pinned as an archive; the two
-    *executables* inside it are pinned to the digests the importer itself
-    accepts, which is the check that actually matters.
+    Tried in order of how much they cost the player:
+
+    1. the pinned 8.1.1 ``.7z`` (32 MB, digest pinned by GitHub);
+    2. the same 8.1.1 as ``.zip`` (104 MB) - only when the 7z cannot be
+       unpacked on this machine;
+    3. gyan.dev's moving "latest" zip, unpinnable, last resort.
+
+    Every route ends the same way: ``ffmpeg.exe`` and ``ffprobe.exe`` are
+    checked against the digests the importer itself accepts.  The archive
+    digest is a convenience; these two are the fact that matters.
     """
 
     root = _install_root(settings)
     target = ffmpeg_exe(root)
     if target.is_file() and sha256_file(target) == FFMPEG_EXE_SHA256:
         return target
+
     last_error: Exception | None = None
     attempts: list[str] = []
+
+    def collect(archive: Path, staging: Path) -> bool:
+        """Pull the two executables out of an unpacked archive."""
+
+        nonlocal last_error
+        candidates = list(staging.rglob("ffmpeg.exe"))
+        if not candidates:
+            last_error = DownloadError("в архиве FFmpeg нет ffmpeg.exe")
+            return False
+        source = candidates[0]
+        probe = source.with_name("ffprobe.exe")
+        if not probe.is_file():
+            last_error = DownloadError("в архиве FFmpeg нет ffprobe.exe")
+            return False
+        if sha256_file(source) != FFMPEG_EXE_SHA256:
+            last_error = DownloadError(
+                "ffmpeg.exe из этого архива не совпадает с закреплённым импортёром:\n"
+                f"  ожидалось {FFMPEG_EXE_SHA256}\n  получено  {sha256_file(source)}"
+            )
+            return False
+        if sha256_file(probe) != FFPROBE_EXE_SHA256:
+            last_error = DownloadError("ffprobe.exe не совпадает с закреплённым хешем.")
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        shutil.copyfile(probe, target.with_name("ffprobe.exe"))
+        return True
+
+    def attempt(artifact, unpack) -> bool:
+        nonlocal last_error
+        archive = downloads_dir(root) / Path(artifact.url).name
+        archive.unlink(missing_ok=True)
+        try:
+            download(
+                artifact.url,
+                archive,
+                expected_sha256=artifact.sha256,
+                expected_size=artifact.size,
+                label=artifact.label,
+                echo=echo,
+                progress=progress,
+                opener=opener,
+                allow_unpinned=artifact.sha256 is None,
+            )
+            staging = root / ".launcher" / "ffmpeg-extract"
+            if staging.exists():
+                shutil.rmtree(staging)
+            unpack(archive, staging)
+            if not collect(archive, staging):
+                return False
+            shutil.rmtree(staging, ignore_errors=True)
+            archive.unlink(missing_ok=True)
+            echo(f"FFmpeg установлен: {target}")
+            return True
+        except LauncherError as exc:
+            last_error = exc
+            attempts.append(f"  {artifact.url}\n    {exc}")
+            echo(f"  не вышло: {artifact.url}")
+            echo(f"    {exc}")
+            return False
+        except Exception as exc:  # network, disk, anything
+            last_error = exc
+            attempts.append(f"  {artifact.url}\n    {exc}")
+            echo(f"  не вышло: {artifact.url}")
+            echo(f"    {exc}")
+            return False
+
+    # 1. 32 MB, pinned.
+    if attempt(FFMPEG_7Z, lambda a, d: extract_7z(a, d, label="FFmpeg 8.1.1", echo=echo)):
+        return target
+    # 2. The same build as a zip: 72 MB more, but every machine can open it.
+    echo("Архив .7z не распаковался — качаю тот же FFmpeg в ZIP (больше по размеру).")
+    if attempt(FFMPEG_8_1_1_ZIP, lambda a, d: extract_zip(a, d, label="FFmpeg 8.1.1")):
+        return target
+    # 3. Upstream "latest", unpinnable: the executables are still verified.
     for url in FFMPEG_URL_CANDIDATES:
         archive = downloads_dir(root) / "ffmpeg.zip"
         archive.unlink(missing_ok=True)
@@ -966,54 +1157,35 @@ def ensure_ffmpeg(settings: Settings, *, echo=print, opener=urllib.request.urlop
                 url,
                 archive,
                 expected_sha256=None,
-                label="FFmpeg",
+                label="FFmpeg (последняя сборка)",
                 echo=echo,
                 progress=progress,
                 opener=opener,
                 allow_unpinned=True,
             )
-        except Exception as exc:  # try the next mirror
+            staging = root / ".launcher" / "ffmpeg-extract"
+            if staging.exists():
+                shutil.rmtree(staging)
+            extract_zip(archive, staging, label="FFmpeg")
+            if collect(archive, staging):
+                shutil.rmtree(staging, ignore_errors=True)
+                archive.unlink(missing_ok=True)
+                echo(f"FFmpeg установлен: {target}")
+                return target
+        except Exception as exc:
             last_error = exc
             attempts.append(f"  {url}\n    {exc}")
             echo(f"  не вышло: {url}")
             echo(f"    {exc}")
-            continue
-        staging = root / ".launcher" / "ffmpeg-extract"
-        if staging.exists():
-            shutil.rmtree(staging)
-        extract_zip(archive, staging, label="FFmpeg")
-        candidates = list(staging.rglob("ffmpeg.exe"))
-        if not candidates:
-            last_error = DownloadError("в архиве FFmpeg нет ffmpeg.exe")
-            continue
-        source = candidates[0]
-        probe = source.with_name("ffprobe.exe")
-        if not probe.is_file():
-            last_error = DownloadError("в архиве FFmpeg нет ffprobe.exe")
-            continue
-        if sha256_file(source) != FFMPEG_EXE_SHA256:
-            last_error = DownloadError(
-                "ffmpeg.exe из этого архива не совпадает с закреплённым импортёром:\n"
-                f"  ожидалось {FFMPEG_EXE_SHA256}\n  получено  {sha256_file(source)}"
-            )
-            continue
-        if sha256_file(probe) != FFPROBE_EXE_SHA256:
-            last_error = DownloadError("ffprobe.exe не совпадает с закреплённым хешем.")
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
-        shutil.copyfile(probe, target.with_name("ffprobe.exe"))
-        shutil.rmtree(staging, ignore_errors=True)
-        archive.unlink(missing_ok=True)
-        echo(f"FFmpeg установлен: {target}")
-        return target
+
     archive = downloads_dir(root) / "ffmpeg.zip"
     detail = "\n".join(attempts) if attempts else (str(last_error) if last_error else "неизвестно")
     raise DownloadError(
-        "Не удалось получить FFmpeg. Пробовал все зеркала:\n"
+        "Не удалось получить FFmpeg. Что пробовал:\n"
         f"{detail}\n\n"
-        "Если ни одно не открывается (бывает у некоторых провайдеров), "
-        "скачайте архив essentials с сайта gyan.dev вручную и положите его сюда:\n"
+        "Если ни один адрес не открывается (бывает у некоторых провайдеров), "
+        "скачайте ffmpeg-8.1.1-essentials_build.7z со страницы "
+        "https://github.com/GyanD/codexffmpeg/releases/tag/8.1.1 вручную и положите сюда:\n"
         f"  {archive}\n"
         "Лаунчер проверит его и продолжит."
     )
