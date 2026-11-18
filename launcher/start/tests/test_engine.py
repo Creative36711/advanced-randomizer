@@ -903,6 +903,8 @@ class ReleaseTests(unittest.TestCase):
         )
         document = yaml.safe_load(workflow)
         events = document.get("on", document.get(True))
+        # The commit step cannot push from a tag build (detached HEAD).
+        self.assertIn("github.ref_type == 'branch'", workflow)
         self.assertIn("push", events)
         self.assertIn("tags", events["push"])
         self.assertIn("branches", events["push"])

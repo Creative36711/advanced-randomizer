@@ -68,13 +68,14 @@ jobs:
           Get-Item $output | Format-List Name, Length, LastWriteTime
 
       - name: Commit the exe to the repository
-        if: github.event_name != 'pull_request'
+        # Only for a branch build.  A tag build cannot push (detached HEAD) and
+        # does not need to: the exe it compiles is committed by the branch run
+        # that produced it.
+        if: github.ref_type == 'branch'
         shell: pwsh
         run: |
           $exe = 'AdvancedRandomizer.exe'
-          $changed = $false
-          if (git status --porcelain -- $exe) { $changed = $true }
-          if (-not $changed) {
+          if (-not (git status --porcelain -- $exe)) {
             Write-Host 'the committed exe already matches this build'
           } else {
             git config user.name 'github-actions[bot]'
@@ -82,6 +83,9 @@ jobs:
             git add -- $exe
             git commit -m 'Rebuild AdvancedRandomizer.exe'
             if ($LASTEXITCODE -ne 0) { Write-Host '::error::git commit failed'; exit 1 }
+            # The branch may have moved while this job was compiling.
+            git pull --rebase --autostash
+            if ($LASTEXITCODE -ne 0) { Write-Host '::error::git pull --rebase failed'; exit 1 }
             git push
             if ($LASTEXITCODE -ne 0) { Write-Host '::error::git push failed'; exit 1 }
             Write-Host "committed $exe"
@@ -92,6 +96,8 @@ jobs:
         run: |
           $stage = 'dist/AdvancedRandomizer'
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          # The commit step does not run on a tag, so the exe compiled above is
+          # still an untracked file here - it comes first in this list.
           Copy-Item AdvancedRandomizer.exe $stage
           Copy-Item launcher -Destination $stage -Recurse
           Copy-Item README.md $stage
