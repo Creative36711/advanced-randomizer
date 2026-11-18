@@ -19,7 +19,7 @@ on:
       - "launcher/build/**"
       - "launcher/start/**"
       - ".github/workflows/launcher-release.yml"
-  tags: ["v*"]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
