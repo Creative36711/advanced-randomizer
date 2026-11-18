@@ -32,6 +32,12 @@ New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
 $script:crashLog = Join-Path $stateDir "launcher.log"
 $script:readyFile = Join-Path $stateDir "launcher-ready"
 
+# StrictMode Latest refuses to READ an undefined variable, so every flag this
+# script tests must exist before the first test.  "$script:busy" was added
+# without this line, and Refresh-Status died on its first read: the window
+# opened, then said nothing at all about the install.
+$script:busy = $false
+
 try {
     Remove-Item -LiteralPath $script:crashLog -Force -ErrorAction SilentlyContinue
 } catch { }
@@ -65,8 +71,23 @@ $env:PYTHONIOENCODING = "utf-8"
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $engine = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "engine.py"))
-$bootstrapRoot = Join-Path $env:LOCALAPPDATA "AdvancedRandomizer\bootstrap"
+# The launcher's own Python goes INSIDE the install folder the player chose, so
+# the whole game stays in one place and can be moved or deleted as a unit.  It
+# is a downloaded interpreter, never an installation into Windows: no PATH
+# entry, no registry key, no system Python touched.
 $settingsPath = Join-Path $env:APPDATA "AdvancedRandomizer\settings.json"
+
+function Get-StateRoot {
+    if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
+        try {
+            $document = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+            if ($document.installRoot) { return $document.installRoot }
+        } catch { }
+    }
+    return (Join-Path $env:LOCALAPPDATA "AdvancedRandomizer")
+}
+
+$bootstrapRoot = Join-Path (Get-StateRoot) "launcher-python"
 
 if (-not (Test-Path -LiteralPath $engine -PathType Leaf)) {
     [System.Windows.Forms.MessageBox]::Show("Не найден engine.py рядом с лаунчером:`n$engine", "Advanced Randomizer") | Out-Null
@@ -221,6 +242,9 @@ function Ensure-BootstrapPython {
     Write-Log "Python 3.9+ не найден. Скачиваю закреплённую сборку 3.12.13…"
 
     $script = Join-Path $PSScriptRoot "bootstrap-python.ps1"
+    # The interpreter is installed INTO the launcher folder, not next to it:
+    # a player who moves or copies that one folder keeps a working launcher,
+    # and nothing is written outside it.
     $output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script -Destination $bootstrapRoot -Quiet 2>&1
     foreach ($line in @($output)) {
         if ($line) { Write-Log ([string]$line) }
