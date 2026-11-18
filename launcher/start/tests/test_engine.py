@@ -1044,3 +1044,61 @@ class ArgumentQuotingTests(unittest.TestCase):
     @staticmethod
     def window() -> Path:
         return Path(__file__).resolve().parent.parent / "launcher.ps1"
+
+class PipelineLeakTests(unittest.TestCase):
+    """A PowerShell function that emits extra values returns an ARRAY.
+
+    Invoke-Engine returned the exit code AND the log lines it had just written,
+    because Read-NewLogLines passed Write-Log's output up the pipeline. Then
+    `@(0) -ne 0` is true, so every successful step looked like a failure: the
+    window saved settings four times in a row and never started the autopilot.
+    """
+
+    WINDOW = Path(__file__).resolve().parent.parent / "launcher.ps1"
+
+    def text(self) -> str:
+        return self.WINDOW.read_text(encoding="utf-8-sig")
+
+    def body(self, name: str) -> str:
+        text = self.text()
+        start = text.index("function " + name)
+        depth, i = 0, start
+        while i < len(text):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+            i += 1
+        raise AssertionError(f"unterminated function {name}")
+
+    def test_helpers_called_from_captured_functions_are_voided(self) -> None:
+        # These functions are called inside Invoke-Engine and Ensure-BootstrapPython,
+        # whose return values ARE captured.
+        for name in ("Write-Log", "Read-NewLogLines"):
+            body = self.body(name)
+            for line in body.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#") or not stripped:
+                    continue
+                if "Write-Log" in stripped and "function" not in stripped:
+                    self.assertIn("[void]", stripped, f"leaking call in {name}: {stripped}")
+                if "AppendText" in stripped or "ScrollToCaret" in stripped:
+                    self.assertIn("[void]", stripped, f"leaking call in {name}: {stripped}")
+
+    def test_callers_coerce_the_exit_code(self) -> None:
+        text = self.text()
+        # Every place that decides "did it work" goes through Get-ExitCode.
+        self.assertIn("function Get-ExitCode", text)
+        for call in ("Get-ExitCode (Save-Fields)", "Get-ExitCode (Invoke-Engine"):
+            self.assertIn(call, text)
+        # The raw comparisons that caused the silent no-op are gone.
+        self.assertNotIn("if ((Save-Fields) -ne 0)", text)
+        self.assertNotIn("$code = Invoke-Engine", text)
+
+    def test_a_failed_save_is_reported_not_swallowed(self) -> None:
+        text = self.text()
+        start = text.index("$play.Add_Click({")
+        body = text[start : text.index("$setup.Add_Click({")]
+        self.assertIn("Не удалось сохранить настройки", body)
