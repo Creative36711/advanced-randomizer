@@ -46,7 +46,7 @@ func shuffle(m) -> void:
 			tree.science_to_power[row.science_id] = pick
 		tree.powers = powers
 		tree.order = order
-		m.sim._team_spellbooks[team] = tree
+		m.state.books[team] = tree
 
 func grant(m, team: int, id: String) -> bool:
 	if not library.has(id) or m.sim.has_power(team, id):
@@ -67,7 +67,7 @@ func grant(m, team: int, id: String) -> bool:
 		tree.science_to_power[row.science_id] = id
 	var science: String = tree.powers[id].science_id
 	tree.ready = true
-	m.sim._team_spellbooks[team] = tree
+	m.state.books[team] = tree
 	m.sim.purchased_powers[team].append(id)
 	if science not in m.sim._team_sciences[team]:
 		m.sim._team_sciences[team].append(science)

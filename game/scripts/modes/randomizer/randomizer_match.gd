@@ -40,6 +40,9 @@ func collect() -> void:
 
 func start() -> void:
 	state.clock = 0
+	state.books = {}
+	if sim != null and "randomizer" in sim:
+		sim.randomizer_match = self
 	draft.setup(self)
 	chaos.setup(self)
 	collect()

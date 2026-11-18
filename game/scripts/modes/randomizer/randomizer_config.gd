@@ -11,7 +11,7 @@ static func defaults() -> Dictionary:
 		"shuffle_units": true, "shuffle_heroes": true, "shuffle_spellbook": true, "draft": true, "chaos": true}
 
 static func valid(raw: Variant) -> bool:
-	if not raw is Dictionary or raw.size() != defaults().size() or raw.get("version") != 1:
+	if not raw is Dictionary or raw.size() != defaults().size() or not raw.get("version") is int or raw.version != 1:
 		return false
 	for flag in FLAGS:
 		if not raw.get(flag) is bool:
@@ -31,3 +31,7 @@ static func new_seed() -> String:
 	for byte in Crypto.new().generate_random_bytes(12):
 		text += ALPHABET[byte % ALPHABET.length()]
 	return text
+
+static func fingerprint() -> String:
+	# Godot does not promise identical PCG output between engine versions.
+	return "%s:%s" % [Engine.get_version_info().string, FileAccess.get_sha256("res://scripts/modes/randomizer/data/tiers_db.json")]
