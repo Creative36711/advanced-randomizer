@@ -366,6 +366,13 @@ function Read-NewLogLines {
 function Invoke-Engine {
     param([string[]]$Arguments)
 
+    # Re-entrancy guard: DoEvents inside the wait loop can deliver another
+    # click, and two engines writing the same settings would corrupt them.
+    if ($script:busy) {
+        Write-Log "Ещё идёт предыдущий шаг — дождитесь его окончания."
+        return 1
+    }
+    $script:busy = $true
     $play.Enabled = $false
     $setup.Enabled = $false
     $progress.Visible = $true
@@ -430,7 +437,9 @@ function Invoke-Engine {
         if ($stream) { $stream.Dispose() }
         Remove-Item -LiteralPath $logFile, $errFile -Force -ErrorAction SilentlyContinue
         $progress.Visible = $false
+        $script:busy = $false
         $setup.Enabled = $true
+        $play.Enabled = $true
     }
 }
 
@@ -443,9 +452,22 @@ function Read-Status {
     }
     $logFile = Join-Path ([IO.Path]::GetTempPath()) ("advanced-randomizer-status-" + [Guid]::NewGuid().ToString("N") + ".json")
     try {
+        # Ask about the folders ON SCREEN, not only the saved ones: the status
+        # line said "install folder not chosen" while the field showed a path.
+        $argumentList = @($engine, "status")
+        $fieldMap = @(
+            @("install-root", "--install-root"),
+            @("bfme2-install", "--bfme2-install"),
+            @("rotwk-install", "--rotwk-install"),
+            @("patch202-root", "--patch202-root")
+        )
+        foreach ($field in $fieldMap) {
+            $value = Get-FieldText -Tag $field[0]
+            if ($value) { $argumentList += @($field[1], $value) }
+        }
         $statusArgs = @{
             FilePath = $python
-            ArgumentList = @($engine, "status")
+            ArgumentList = $argumentList
             WorkingDirectory = $repoRoot
             WindowStyle = "Hidden"
             Wait = $true
@@ -488,7 +510,6 @@ function Refresh-Status {
     if ($null -eq $info) {
         $statusLabel.Text = "Не удалось прочитать настройки лаунчера. Подробности — в логе."
         $statusLabel.ForeColor = $bad
-        $play.Enabled = $false
         return
     }
 
@@ -510,18 +531,24 @@ function Refresh-Status {
 
     $full.Visible = $info.canFullRotwk
 
+    # PLAY is clickable in every state.  A disabled button with no explanation
+    # is exactly what the player reported as "does not react"; when the install
+    # is not ready yet the same button prepares everything and then launches.
     if ($info.ready) {
         $statusLabel.Text = "Готово к игре. Seed: $($info.seed). Пак: $($info.activePack)"
         $statusLabel.ForeColor = $good
-        $play.Enabled = $true
+        $play.Text = "ИГРАТЬ"
         $setup.Text = "Пересобрать контент"
     } else {
         $notes = @($info.notes) -join " "
-        $statusLabel.Text = if ($notes) { $notes } else { "Нужна первичная настройка." }
+        if (-not $notes) { $notes = "Игра ещё не собрана." }
+        $statusLabel.Text = "$notes Нажмите ИГРАТЬ — лаунчер подготовит всё сам."
         $statusLabel.ForeColor = $muted
-        $play.Enabled = $false
+        $play.Text = "ИГРАТЬ (подготовить и запустить)"
         $setup.Text = "Настроить всё за меня"
     }
+    $play.Enabled = -not $script:busy
+    $setup.Enabled = -not $script:busy
 }
 
 function Save-Fields {
@@ -545,9 +572,20 @@ function Save-Fields {
 $quit.Add_Click({ $form.Close() })
 
 $play.Add_Click({
+    if (-not (Get-FieldText -Tag "install-root")) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Сначала выберите папку лаунчера — в неё будут скачаны движок и контент.",
+            "Advanced Randomizer") | Out-Null
+        return
+    }
     if ((Save-Fields) -ne 0) { Refresh-Status; return }
-    $code = Invoke-Engine -Arguments @("launch")
-    if ($code -ne 0) { Write-Log "Игра не запустилась (код $code)." }
+    # One button for the player: prepare whatever is missing, then launch.
+    # Before this, PLAY silently refused until a separate setup run finished,
+    # and the refusal was a disabled button - invisible.
+    $code = Invoke-Engine -Arguments @("autopilot")
+    if ($code -ne 0) {
+        Write-Log "Подготовка остановилась (код $code). Причина — в логе выше."
+    }
     Refresh-Status
 })
 
