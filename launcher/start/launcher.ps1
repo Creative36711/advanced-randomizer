@@ -100,6 +100,31 @@ function Get-PinnedPythonPath {
     return (Join-Path $Root "tools\cpython-3.12.13\python.exe")
 }
 
+function Get-PythonVersion {
+    # `"$env:TEMP\ar-pyver.txt"` leaves a stray backslash before the quote.
+    param([string]$Exe)
+    $handle = [Guid]::NewGuid().ToString("N")
+    $out = Join-Path ([IO.Path]::GetTempPath()) "$handle.txt"
+    $err = Join-Path ([IO.Path]::GetTempPath()) "$handle.err"
+    $arguments = @{
+        FilePath = $Exe
+        ArgumentList = @("-c", "import sys; print('%d.%d' % sys.version_info[:2])")
+        WindowStyle = "Hidden"
+        Wait = $true
+        RedirectStandardOutput = $out
+        RedirectStandardError = $err
+    }
+    try {
+        Start-Process @arguments | Out-Null
+        if (-not (Test-Path -LiteralPath $out -PathType Leaf)) { return "" }
+        return (Get-Content -LiteralPath $out -Raw).Trim()
+    } catch {
+        return ""
+    } finally {
+        Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Ensure-BootstrapPython {
     # The launcher's own interpreter for running the engine before an install
     # root exists.  It is the same pinned build the importer demands, so the
@@ -120,6 +145,12 @@ function Ensure-BootstrapPython {
         if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $candidate }
     }
 
+    # Someone already has a working 3.12: use it instead of downloading one.
+    $system = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($null -ne $system -and (Get-PythonVersion -Exe $system.Source) -eq "3.12") {
+        return $system.Source
+    }
+
     $script = Join-Path $PSScriptRoot "bootstrap-python.ps1"
     & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script -Destination $bootstrapRoot -Quiet | Out-Null
     $installed = Get-PinnedPythonPath -Root $bootstrapRoot
@@ -129,11 +160,6 @@ function Ensure-BootstrapPython {
     return $installed
 }
 
-function Quote-Argument {
-    param([string]$Value)
-    if ($Value -match '[\s"]') { return '"' + $Value.Replace('"', '\"') + '"' }
-    return $Value
-}
 
 # ---------------------------------------------------------------------------
 # Window
@@ -170,6 +196,8 @@ foreach ($row in $rows) {
         $dialog.Description = "Выберите папку"
         $dialog.ShowNewFolderButton = $true
         if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            # Captured directly in the closure: a `param($tag)` would shadow the
+            # outer variable and always be empty.
             foreach ($control in $form.Controls) {
                 if ($control -is [System.Windows.Forms.TextBox] -and $control.Tag -eq $tag) {
                     $control.Text = $dialog.SelectedPath
@@ -272,12 +300,20 @@ function Invoke-Engine {
     try {
         $python = Ensure-BootstrapPython
         $all = @($python, $engine) + $Arguments
-        $commandLine = ($all | ForEach-Object { Quote-Argument $_ }) -join " "
-        Write-Log "> $commandLine"
+        Write-Log ("> " + ($all -join " "))
 
-        $process = Start-Process -FilePath "`"$python`"" -ArgumentList (($all[1..($all.Length - 1)] | ForEach-Object { Quote-Argument $_ }) -join " ") `
-            -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru `
-            -RedirectStandardOutput $logFile -RedirectStandardError $errFile
+        # Array splatting, not one rebuilt string: every argument keeps its own
+        # boundary, so a path with a space cannot turn into two arguments.
+        $startArgs = @{
+            FilePath = $python
+            ArgumentList = @($engine) + $Arguments
+            WorkingDirectory = $repoRoot
+            WindowStyle = "Hidden"
+            PassThru = $true
+            RedirectStandardOutput = $logFile
+            RedirectStandardError = $errFile
+        }
+        $process = Start-Process @startArgs
 
         $stream = New-Object System.IO.FileStream($logFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
         $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
@@ -310,9 +346,16 @@ function Read-Status {
     $python = Ensure-BootstrapPython
     $logFile = Join-Path ([IO.Path]::GetTempPath()) ("advanced-randomizer-status-" + [Guid]::NewGuid().ToString("N") + ".json")
     try {
-        Start-Process -FilePath "`"$python`"" -ArgumentList ((Quote-Argument $engine), "status") `
-            -WorkingDirectory $repoRoot -WindowStyle Hidden -Wait `
-            -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err" | Out-Null
+        $statusArgs = @{
+            FilePath = $python
+            ArgumentList = @($engine, "status")
+            WorkingDirectory = $repoRoot
+            WindowStyle = "Hidden"
+            Wait = $true
+            RedirectStandardOutput = $logFile
+            RedirectStandardError = "$logFile.err"
+        }
+        Start-Process @statusArgs | Out-Null
         if (-not (Test-Path -LiteralPath $logFile -PathType Leaf)) { return $null }
         $raw = Get-Content -LiteralPath $logFile -Raw -Encoding UTF8
         if (-not $raw) { return $null }
@@ -386,16 +429,18 @@ function Refresh-Status {
 
 function Save-Fields {
     $arguments = @("set")
-    $map = @{
-        "install-root"   = "--install-root"
-        "bfme2-install"  = "--bfme2-install"
-        "rotwk-install"  = "--rotwk-install"
-        "patch202-root"  = "--patch202-root"
-        "seed"           = "--seed"
-    }
-    foreach ($tag in $map.Keys) {
-        $value = Get-FieldText -Tag $tag
-        if ($value) { $arguments += @($map[$tag], $value) }
+    # An ordered array of pairs, not a hashtable: in PowerShell 5.1 neither
+    # `.Keys` nor `.Count` on a hashtable survives StrictMode.
+    $fields = @(
+        @("install-root", "--install-root"),
+        @("bfme2-install", "--bfme2-install"),
+        @("rotwk-install", "--rotwk-install"),
+        @("patch202-root", "--patch202-root"),
+        @("seed", "--seed")
+    )
+    foreach ($field in $fields) {
+        $value = Get-FieldText -Tag $field[0]
+        if ($value) { $arguments += @($field[1], $value) }
     }
     return (Invoke-Engine -Arguments $arguments)
 }
