@@ -320,6 +320,21 @@ def download(
                         )
                     if total and written % (16 * 1024 * 1024) < len(block):
                         echo(f"  {human_bytes(written)} из {human_bytes(total)}")
+    except DownloadError:
+        temporary.unlink(missing_ok=True)
+        raise
+    except (urllib.error.URLError, OSError, TimeoutError) as error:
+        # A blocked or dropped connection must arrive as a sentence the player
+        # can act on, not as a Python traceback in the log box.
+        temporary.unlink(missing_ok=True)
+        raise DownloadError(
+            f"{label}: не удалось скачать.\n"
+            f"  адрес: {url}\n"
+            f"  причина: {error}\n\n"
+            "Проверьте интернет. Если адрес недоступен (бывает у некоторых "
+            "провайдеров), скачайте файл вручную и положите его сюда:\n"
+            f"  {destination}"
+        ) from error
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
@@ -495,6 +510,46 @@ def selected_pack(install_root: Path) -> dict | None:
     if not (root / active).exists():
         return None
     return value
+
+
+def with_overrides(settings: Settings, overrides: dict) -> Settings:
+    """A copy of ``settings`` with the given fields replaced, nothing saved.
+
+    The window must be able to ask "what would the state be if these folders
+    were chosen", because its fields can be ahead of the saved file.
+    """
+
+    clone = Settings(
+        install_root=settings.install_root,
+        bfme2_install=settings.bfme2_install,
+        rotwk_install=settings.rotwk_install,
+        patch202_root=settings.patch202_root,
+        seed=settings.seed,
+        auto_seed=settings.auto_seed,
+    )
+    for name, value in overrides.items():
+        setattr(clone, name, value)
+    return clone
+
+
+def status_overrides(arguments) -> dict:
+    """Map the CLI ``--*`` options onto Settings fields, skipping empty ones."""
+
+    mapping = {
+        "install_root": "install_root",
+        "bfme2_install": "bfme2_install",
+        "rotwk_install": "rotwk_install",
+        "patch202_root": "patch202_root",
+    }
+    result: dict = {}
+    for option, field in mapping.items():
+        value = getattr(arguments, option, None)
+        if value not in (None, ""):
+            result[field] = Path(value)
+    seed = getattr(arguments, "seed", None)
+    if seed:
+        result["seed"] = seed
+    return result
 
 
 def status(settings: Settings) -> dict:
@@ -1488,7 +1543,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("status", help="report every readiness flag as JSON")
+    status_parser = sub.add_parser("status", help="report every readiness flag as JSON")
+    # The window asks about the folders currently ON SCREEN, which may not be
+    # saved yet.  Without this the answer described the previous settings and
+    # said "install folder not chosen" while the field visibly contained one.
+    status_parser.add_argument("--install-root", type=Path)
+    status_parser.add_argument("--bfme2-install", type=Path)
+    status_parser.add_argument("--rotwk-install", type=Path)
+    status_parser.add_argument("--patch202-root", type=Path)
+    status_parser.add_argument("--seed")
     sub.add_parser("detect", help="probe the usual retail locations, save what is found")
 
     setter = sub.add_parser("set", help="change settings")
@@ -1523,6 +1586,9 @@ def main(argv: list[str] | None = None) -> int:
     runner = Runner(echo=print)
     try:
         if args.command == "status":
+            overrides = status_overrides(args)
+            if overrides:
+                settings = with_overrides(settings, overrides)
             print(json.dumps(status(settings), indent=2, ensure_ascii=False))
             return EXIT_OK
         if args.command == "folders":

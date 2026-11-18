@@ -717,3 +717,72 @@ class EntryPointTests(unittest.TestCase):
         self.assertIn('"launcher.log"', text)
         # The window announces itself only after it is actually on screen.
         self.assertIn("launcher-ready", text)
+    def test_status_can_describe_folders_that_are_not_saved_yet(self) -> None:
+        # The window used to ask about the SAVED settings while showing typed
+        # paths, so a filled field produced "install folder not chosen".
+        with tempfile.TemporaryDirectory() as scratch:
+            empty = engine.Settings()
+            self.assertIn("Папка лаунчера не выбрана.", engine.status(empty)["notes"])
+
+            merged = engine.with_overrides(empty, {"install_root": Path(scratch)})
+            report = engine.status(merged)
+            self.assertNotIn("Папка лаунчера не выбрана.", report["notes"])
+            self.assertEqual(report["installRoot"], scratch)
+            # ...and asking did not touch the saved settings.
+            self.assertIsNone(empty.install_root)
+
+    def test_status_overrides_ignore_empty_options(self) -> None:
+        class Arguments:
+            install_root = None
+            bfme2_install = None
+            rotwk_install = None
+            patch202_root = None
+            seed = ""
+
+        self.assertEqual(engine.status_overrides(Arguments()), {})
+
+    def test_refresh_status_never_disables_play(self) -> None:
+        # The player pressed PLAY many times and saw nothing: Refresh-Status
+        # had disabled the button because the install was not ready, and a
+        # disabled button says nothing at all.
+        text = self.read_bytes("launcher.ps1").decode("utf-8-sig")
+        start = text.index("function Refresh-Status {")
+        end = text.index("function Save-Fields {")
+        body = text[start:end]
+        self.assertNotIn("$play.Enabled = $false", body)
+        self.assertIn("$play.Enabled = -not $script:busy", body)
+
+    def test_play_prepares_and_launches_from_one_click(self) -> None:
+        text = self.read_bytes("launcher.ps1").decode("utf-8-sig")
+        start = text.index("$play.Add_Click({")
+        body = text[start : text.index("$setup.Add_Click({")]
+        self.assertIn('Invoke-Engine -Arguments @("autopilot")', body)
+        self.assertIn('Get-FieldText -Tag "install-root"', body)
+
+class DownloadErrorTests(unittest.TestCase):
+    def test_a_blocked_connection_is_explained_not_traced(self) -> None:
+        # Some ISPs refuse GitHub's release host.  Before this, the player saw
+        # a raw Python traceback; now the engine names the address, the reason
+        # and the folder where the file can be put by hand.
+        import urllib.error
+
+        def blocked(request, timeout=None):
+            raise urllib.error.URLError(OSError(104, "Connection reset by peer"))
+
+        with tempfile.TemporaryDirectory() as scratch:
+            destination = Path(scratch) / "tool.zip"
+            with self.assertRaises(engine.DownloadError) as caught:
+                engine.download(
+                    "https://example.invalid/tool.zip",
+                    destination,
+                    expected_sha256="a" * 64,
+                    label="Python 3.12.13",
+                    opener=blocked,
+                    echo=lambda line: None,
+                )
+            message = str(caught.exception)
+            self.assertIn("не удалось скачать", message)
+            self.assertIn("https://example.invalid/tool.zip", message)
+            self.assertIn(str(destination), message)
+            self.assertEqual(caught.exception.code, engine.EXIT_DOWNLOAD)
+            self.assertFalse(destination.with_name("tool.zip.part").exists())
