@@ -18,18 +18,21 @@
  	retail_build_plots_only = false
 --- a/game/src/retail_slice/retail_command.gd
 +++ b/game/src/retail_slice/retail_command.gd
-@@ -14,6 +14,7 @@
+@@ -14,6 +14,8 @@
  	"issue_exit_garrison",
  	"issue_construct",
  	"issue_expansion_construct",
++	"ar_draft",
 +	"ar_reroll",
  	"queue_unit",
  	"queue_structure_upgrade",
  	"queue_battalion_upgrade",
-@@ -50,6 +51,8 @@
+@@ -50,6 +52,10 @@
  		return false
  	if typeof(cmd.get("args")) != TYPE_DICTIONARY:
  		return false
++	if cmd.type == "ar_draft":
++		return cmd.args.size() == 2 and cmd.args.get("offer") is int and cmd.args.offer > 0 and cmd.args.get("index") is int and cmd.args.index >= 0 and cmd.args.index < 3
 +	if cmd.type == "ar_reroll":
 +		return cmd.args.size() == 1 and cmd.args.get("producer") is int and cmd.args.producer > 0
  	return _is_primitive_dictionary(cmd["args"] as Dictionary)
@@ -109,6 +112,17 @@
  	var production_contract := building.get("production_update", {}) as Dictionary
  	for modifier_value in production_contract.get("modifiers", []) as Array:
  		var modifier := modifier_value as Dictionary
+--- a/game/src/retail_slice/retail_sim_upgrades.gd
++++ b/game/src/retail_slice/retail_sim_upgrades.gd
+@@ -321,6 +321,8 @@
+ 				float(building.get("production_multiplier", 1.0)) * production_factor,
+ 				0.0001
+ 			)
++		if _sim.randomizer != null and building.structure_kind == "fortress" and int(contract.get("levels_to_gain", 0)) > 0:
++			_sim.randomizer.draft.trigger(_sim.randomizer, int(building.team))
+ 		_sim._emit_event("upgrade.completed", structure_id, 0, {
+ 			"team": int(building.get("team", -1)),
+ 			"upgrade_id": upgrade_id,
 --- a/game/src/retail_slice/retail_slice_sim.gd
 +++ b/game/src/retail_slice/retail_slice_sim.gd
 @@ -792,7 +792,7 @@
@@ -179,10 +193,31 @@
  	if base_loop_enabled:
  		_step_economy()
  		_step_structure_upgrades()
-@@ -6751,6 +6772,8 @@
+@@ -5630,7 +5651,8 @@
+ 	return _ability_runtime_subsystem()._timed_modifier_active(row, kind)
+ 
+ func _ability_outgoing_multiplier(row: Dictionary) -> float:
+-	return _ability_runtime_subsystem()._ability_outgoing_multiplier(row)
++	var base: float = _ability_runtime_subsystem()._ability_outgoing_multiplier(row)
++	return base * randomizer.draft.damage_factor(randomizer, row) if randomizer != null and randomizer.config.draft else base
+ 
+ func _ability_incoming_multiplier(row: Dictionary) -> float:
+ 	return _ability_runtime_subsystem()._ability_incoming_multiplier(row)
+@@ -6413,6 +6435,8 @@
+ 		if not event.has(key):
+ 			event[key] = data[key]
+ 	events.append(event)
++	if randomizer != null and kind == "construction.completed" and data.get("structure_kind") == "fortress":
++		randomizer.draft.trigger(randomizer, data.team)
+ 	for byte in JSON.stringify(event).to_utf8_buffer():
+ 		_event_digest = ((_event_digest ^ int(byte)) * 16777619) & 0xFFFFFFFF
+ 	_next_event_sequence += 1
+@@ -6751,6 +6775,10 @@
  			last_command_result = issue_construct(_command_ids(args.get("ids", [])), String(args.get("structure_kind", "")), Vector2(args.get("position", Vector2.ZERO)), bool(args.get("dry_run", false)), team)
  		"issue_expansion_construct":
  			last_command_result = issue_expansion_construct(team, int(args.get("fortress_id", 0)), String(args.get("expansion_kind", "")), int(args.get("pad_index", -1)))
++		"ar_draft":
++			last_command_result = randomizer.draft.choose(randomizer, team, args.offer, args.index) if randomizer != null else {"ok": false, "reason": "mode-disabled"}
 +		"ar_reroll":
 +			last_command_result = randomizer.commands.reroll(randomizer, team, args.producer) if randomizer != null else {"ok": false, "reason": "mode-disabled"}
  		"queue_unit":

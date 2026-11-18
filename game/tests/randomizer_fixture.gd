@@ -27,7 +27,9 @@ static func make(config: Dictionary):
 		var rule: Dictionary = manifest.unit_production_rules[id]
 		stats[rule.object_id] = {"horde_id": id, "category": rule.get("category", "infantry"), "member_count": 1, "member_health": 200,
 			"member_damage": 10, "speed": 1.0, "acceleration": 1.0, "braking": 1.0, "turn_rate_degrees_per_second": 180.0,
-			"vision_range": 1.0, "attack_range": 1.0, "attack_period_ticks": 10, "pre_attack_ticks": 2, "firing_duration_ticks": 2,
+			"vision_range_source": 10.0, "speed_source": 10.0, "braking_source": 10.0, "acceleration_source": 10.0,
+			"minimum_attack_range": 0.0, "minimum_attack_range_source": 0.0, "attack_range_source": 10.0,
+			"delay_between_shots_ms": 600.0, "pre_attack_delay_ms": 200.0, "firing_duration_ms": 200.0, "vision_range": 1.0, "attack_range": 1.0, "attack_period_ticks": 10, "pre_attack_ticks": 2, "firing_duration_ticks": 2,
 			"formation_positions": [Vector3.ZERO], "provenance": {}}
 	var rules := {"game": "rotwk", "enable_base_loop": true, "faction_manifest": manifest, "unit_rules": stats,
 		"spawn_initial_battalions": false, "starting_resources": 3000, "command_point_cap": 240, "ai_attack_delay_ticks": 4000}

@@ -5,6 +5,7 @@ var library := {}
 
 func collect(m) -> void:
 	library.clear()
+	_collect_tree(m.sim._spellbook_global_bundle())
 	for team in m.sim.team_ids():
 		_collect_tree(m.sim._team_tree(team))
 	var probe = m.sim.get_script().new()
@@ -16,7 +17,7 @@ func collect(m) -> void:
 func _collect_tree(tree: Dictionary) -> void:
 	for id in tree.get("order", []):
 		var row: Dictionary = tree.powers[id]
-		if row.get("castable", false) and not row.get("nonpressable", false):
+		if not library.has(id) and row.get("castable", false) and not row.get("nonpressable", false):
 			library[id] = row.duplicate(true)
 
 func shuffle(m) -> void:
@@ -46,3 +47,37 @@ func shuffle(m) -> void:
 		tree.powers = powers
 		tree.order = order
 		m.sim._team_spellbooks[team] = tree
+
+func grant(m, team: int, id: String) -> bool:
+	if not library.has(id) or m.sim.has_power(team, id):
+		return false
+	var tree: Dictionary = m.sim._team_tree(team).duplicate(true)
+	if not tree.powers.has(id):
+		var row: Dictionary = library[id].duplicate(true)
+		var slot := 1
+		for power in tree.powers.values():
+			slot = maxi(slot, int(power.purchase_slot) + 1)
+		row.purchase_slot = slot
+		row.cast_slot = slot
+		row.cost = 0
+		row.science_id = "AR_DRAFT_" + id
+		tree.powers[id] = row
+		tree.order.append(id)
+		tree.sciences[row.science_id] = {"cost": 0, "slot": slot, "groups": []}
+		tree.science_to_power[row.science_id] = id
+	var science: String = tree.powers[id].science_id
+	tree.ready = true
+	m.sim._team_spellbooks[team] = tree
+	m.sim.purchased_powers[team].append(id)
+	if science not in m.sim._team_sciences[team]:
+		m.sim._team_sciences[team].append(science)
+	return true
+
+func hud_rows(tree: Dictionary) -> Array:
+	var rows := []
+	for id in tree.order:
+		var p: Dictionary = tree.powers[id]
+		var icons: Array = p.get("icon_ids", [])
+		rows.append({"power_id": id, "icon_id": icons[0] if not icons.is_empty() else id,
+			"cost": p.cost, "purchase_slot": p.purchase_slot, "label": String(id).trim_prefix("SpellBook").capitalize(), "tooltip": ""})
+	return rows
