@@ -77,15 +77,61 @@ MINGIT_64_ZIP = Artifact(
 FFMPEG_EXE_SHA256 = "228d7a8556258de907fdb55f36850078ebc7680b84ec30d84ea02e99bec1d1eb"
 FFPROBE_EXE_SHA256 = "0fde260f5abd35c9cafd96f594cc76365a780c1b73a90e35b6a3409ea1db1bf0"
 
-#: Mirrors, in order.  The archive changes upstream, so it is not pinned; the
-#: two executables inside it are (they must equal the importer's constants).
+#: The exact FFmpeg build the importer demands, already packed by its author.
+#:
+#: THREE reasons this is not `release-essentials.zip` any more:
+#:   * that URL means "the LATEST build", while the pinned digests belong to
+#:     8.1.1 - a player downloaded 104 MB only to be told the hash mismatch;
+#:   * the same 8.1.1 is 32 MB as .7z and 104 MB as .zip;
+#:   * a third of the unpacked archive is ffplay.exe, which nothing here uses.
+#:
+#: The archive digest is published by GitHub for this release, so unlike the
+#: moving gyan.dev URL it can be pinned - and is.
+FFMPEG_7Z = Artifact(
+    key="ffmpeg",
+    label="FFmpeg 8.1.1",
+    url=(
+        "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/"
+        "ffmpeg-8.1.1-essentials_build.7z"
+    ),
+    sha256="23ad8969fbe701d44e6e7e2b97c5fae4a71224fc33a2560a9034e5110d029d15",
+    size=33_664_824,
+    version="8.1.1",
+)
+
+#: 7-Zip's own console extractor: 600 KB, reads 7z, needs no install.
+#: Downloaded only when the .7z route is used and nothing else can open it.
+#: Its digest is published by GitHub for this release, so it is pinned too.
+SEVEN_ZR = Artifact(
+    key="7zr",
+    label="7-Zip extractor",
+    url=(
+        "https://github.com/ip7z/7zip/releases/download/26.06/7zr.exe"
+    ),
+    sha256="e80db2dad715a6c5adabe292d31ed54e11f4e9b99ca349827b50573b175891bc",
+    size=600_064,
+    version="26.06",
+)
+
+#: The same release as a ZIP, for machines without a 7z-capable archiver.
+#: Verified end to end: archive digest pinned, then both executables pinned.
+FFMPEG_8_1_1_ZIP = Artifact(
+    key="ffmpeg-zip",
+    label="FFmpeg 8.1.1 (ZIP)",
+    url=(
+        "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/"
+        "ffmpeg-8.1.1-essentials_build.zip"
+    ),
+    sha256="6f58ce889f59c311410f7d2b18895b33c03456463486f3b1ebc93d97a0f54541",
+    size=109_282_242,
+    version="8.1.1",
+)
+
+#: Last resort: gyan.dev's moving "latest" URL.  The archive cannot be pinned
+#: there, so only the executables are checked - which is still the check that
+#: matters, but it costs a 109 MB download to discover a mismatch.
 FFMPEG_URL_CANDIDATES: tuple[str, ...] = (
-    # gyan.dev first: it is the build the pinned digests were measured on.
     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-    # The same author's GitHub releases.  The player's log had gyan.dev fail
-    # with an SSL EOF while GitHub answered; one mirror is not a source list.
-    "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip",
-    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-7.1.zip",
 )
 
 OPENBFME_SOURCE_RELATIVE = Path("openbfme")

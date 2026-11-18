@@ -1515,13 +1515,92 @@ class FasterStartTests(unittest.TestCase):
         )
         self.assertIn("PIP_PROGRESS_BAR", source)
 
-    def test_ffmpeg_has_more_than_one_mirror(self) -> None:
+    def test_ffmpeg_prefers_the_small_pinned_archive(self) -> None:
         import sys as _sys
 
         _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         import pinned
 
-        self.assertGreaterEqual(len(pinned.FFMPEG_URL_CANDIDATES), 2)
+        # 104 MB "latest" zip -> 32 MB pinned 7z of the exact build.
+        self.assertEqual(pinned.FFMPEG_7Z.version, "8.1.1")
+        self.assertLess(pinned.FFMPEG_7Z.size or 0, 40 * 1024 * 1024)
+        self.assertIsNotNone(pinned.FFMPEG_7Z.sha256, "the archive itself must be pinned")
+
+    def test_the_big_zip_is_a_verified_fallback_not_a_mystery(self) -> None:
+        import sys as _sys
+
+        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        import pinned
+
+        self.assertEqual(pinned.FFMPEG_8_1_1_ZIP.version, "8.1.1")
+        self.assertIsNotNone(pinned.FFMPEG_8_1_1_ZIP.sha256)
+        # The same build, not "whatever is latest today": that mismatch was a
+        # 104 MB download ending in "хеш не совпал".
+        self.assertIn("8.1.1", pinned.FFMPEG_8_1_1_ZIP.url)
+
+    def test_ffplay_is_never_installed(self) -> None:
+        # A third of the unpacked archive is ffplay.exe; nothing uses it.
+        source = (Path(__file__).resolve().parent.parent / "engine.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn('"ffplay.exe"', source)
+        self.assertIn('"ffprobe.exe"', source)
+
+
+class BytesAndEtaTests(unittest.TestCase):
+    """The player asked to see that a download is really moving."""
+
+    def test_speed_and_remaining_time_are_reported(self) -> None:
+        import hashlib
+        import time as _time
+
+        payload = b"x" * (4 * 1024 * 1024)
+
+        class Slow:
+            def __init__(self, data):
+                self.headers = {"Content-Length": str(len(data))}
+                self.data, self.position = data, 0
+
+            def read(self, size):
+                _time.sleep(0.1)
+                block = self.data[self.position : self.position + size]
+                self.position += len(block)
+                return block
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *rest):
+                return False
+
+        scratch = Path(tempfile.mkdtemp())
+        events = scratch / "p.jsonl"
+        engine.download(
+            "https://example.invalid/a",
+            scratch / "a.bin",
+            expected_sha256=hashlib.sha256(payload).hexdigest(),
+            label="Тест",
+            echo=lambda line: None,
+            opener=lambda request, timeout=None: Slow(payload),
+            progress=engine.Progress(engine.FileProgressSink(events)),
+        )
+        rows = [
+            json.loads(line)
+            for line in events.read_text().splitlines()
+            if json.loads(line)["kind"] == "progress"
+        ]
+        self.assertTrue(any(row["rate"] > 0 for row in rows), "rate must be measured")
+        self.assertTrue(
+            any(row["eta"] > 0 for row in rows),
+            "remaining seconds must be estimated, not floored to zero",
+        )
+
+    def test_the_window_prints_speed_and_minutes(self) -> None:
+        window = (Path(__file__).resolve().parent.parent / "launcher.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertIn("/с", window)
+        self.assertIn("ещё ~", window)
 
 class ExitCodeTests(unittest.TestCase):
     """Two opposite lies: "success" after a failure, and "Не удалось

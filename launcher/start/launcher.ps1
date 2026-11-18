@@ -555,12 +555,26 @@ function Read-ProgressEvents {
                 if ($total -gt 0) {
                     $percent = [int][Math]::Floor(100 * $done / $total)
                     $caption = "{0}: {1} из {2} ({3}%)" -f $event.label, (Format-Bytes $done), (Format-Bytes $total), $percent
+                    # Speed and time left: a bar says "going", a rate says
+                    # "going at 3 МБ/с, another minute" - which is what makes
+                    # a slow download bearable.
+                    $rate = [double]$event.rate
+                    if ($rate -gt 0) {
+                        $caption += " — {0}/с" -f (Format-Bytes $rate)
+                        $eta = [double]$event.eta
+                        if ($eta -gt 0) {
+                            $left = [int][Math]::Ceiling($eta / 60)
+                            if ($left -le 1) { $caption += ", меньше минуты" } else { $caption += ", ещё ~{0} мин" -f $left }
+                        }
+                    }
                     Show-Progress -Caption $caption -Percent $percent
                 } else {
                     # No total from the server: show the growing byte count.
                     # A number that keeps rising is proof of life; a marquee
                     # that never changes reads as "frozen".
                     $caption = "{0}: скачано {1}" -f $event.label, (Format-Bytes $done)
+                    $rate = [double]$event.rate
+                    if ($rate -gt 0) { $caption += " — {0}/с" -f (Format-Bytes $rate) }
                     Show-Progress -Caption $caption -Percent (-1)
                 }
             }
