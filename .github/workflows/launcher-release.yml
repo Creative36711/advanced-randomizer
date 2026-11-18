@@ -28,20 +28,22 @@ jobs:
       - name: Compile AdvancedRandomizer.exe
         shell: pwsh
         run: |
+          # Windows ships the .NET Framework at 4.0.30319, and csc.exe there is
+          # a C# 5 compiler: newer syntax such as string interpolation fails
+          # with "CS1056 unexpected character '$'".  Program.cs is written to
+          # that vintage on purpose (no $"", no ?., no nameof).
           $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
           if (-not (Test-Path -LiteralPath $csc)) {
             $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe'
           }
-          Write-Host "compiler: $csc"
+          Write-Host "using compiler: $csc"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $arguments = @(
-            '/nologo', '/target:winexe', '/platform:anycpu', '/optimize+',
-            '/out:dist/AdvancedRandomizer.exe',
-            '/r:System.dll', '/r:System.Windows.Forms.dll',
-            'launcher/build/Program.cs'
-          )
-          & $csc $arguments
-          if ($LASTEXITCODE -ne 0) { throw "csc failed with exit code $LASTEXITCODE" }
+          & $csc /nologo /target:winexe /optimize+ /r:System.dll /r:System.Windows.Forms.dll /out:dist\AdvancedRandomizer.exe launcher\build\Program.cs
+          Write-Host "csc exit code: $LASTEXITCODE"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host '--- first errors ---'
+            exit $LASTEXITCODE
+          }
           Get-Item dist/AdvancedRandomizer.exe | Format-List Name, Length
 
       - name: Assemble the player's download
