@@ -294,6 +294,10 @@ foreach ($row in $rows) {
     $browse.Add_Click({
         param($sender, $eventArgs)
         $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        # Start where the field already points, so re-picking a folder is one
+        # click instead of navigating from "This PC" every time.
+        $current = Get-FieldText -Tag $tag
+        if ($current -and (Test-Path -LiteralPath $current)) { $dialog.SelectedPath = $current }
         $dialog.Description = "Выберите папку"
         $dialog.ShowNewFolderButton = $true
         if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {

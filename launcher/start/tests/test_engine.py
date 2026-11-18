@@ -874,3 +874,26 @@ class PackagingTests(unittest.TestCase):
         self.assertNotIn("?.", source)
         self.assertNotIn("nameof(", source)
         self.assertIn("[STAThread]", source)
+
+class ReleaseTests(unittest.TestCase):
+    ROOT = Path(__file__).resolve().parents[3]
+
+    def test_the_exe_is_committed_by_the_workflow(self) -> None:
+        # The player pulls the repository and looks for an exe there; a build
+        # that only lands in a release page is invisible to them.
+        workflow = (self.ROOT / ".github" / "workflows" / "launcher-release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Commit the exe to the repository", workflow)
+        self.assertIn("AdvancedRandomizer.exe", workflow)
+        # ...and the shortcut cannot re-trigger itself forever.
+        self.assertNotIn('path: "AdvancedRandomizer.exe"', workflow)
+        self.assertIn("paths:", workflow)
+        self.assertIn('"launcher/start/**"', workflow)
+        self.assertNotIn("pull_request:", workflow)
+
+    def test_the_readme_names_the_exe_in_the_repository_root(self) -> None:
+        readme = (self.ROOT / "README.md").read_text(encoding="utf-8")
+        section = readme[readme.index("## Играть"):]
+        self.assertIn("AdvancedRandomizer.exe", section)
+        self.assertIn("AdvancedRandomizer.cmd", section)

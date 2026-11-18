@@ -1,12 +1,19 @@
 # Лаунчер Advanced Randomizer
 
-`AdvancedRandomizer.cmd` — единственное, что нужно нажать игроку.
+`AdvancedRandomizer.exe` в корне репозитория — единственное, что нужно нажать
+игроку. Он собирается из `launcher/build/Program.cs` в GitHub Actions и
+коммитится обратно в корень (`.github/workflows/launcher-release.yml`), потому
+что игрок ищет файл в репозитории, а не на странице релизов.
+
+`launcher/start/AdvancedRandomizer.cmd` делает то же самое через `cmd.exe` —
+запасной путь, если exe заблокирован политикой.
 
 ## Как это устроено
 
 | Файл | Что делает |
 |---|---|
-| `AdvancedRandomizer.cmd` | точка входа: запускает окно без консоли |
+| `build/Program.cs` | исходник exe: запускает окно и показывает лог при падении |
+| `start/AdvancedRandomizer.cmd` | запасная точка входа через cmd.exe |
 | `start/launcher.ps1` | окно (PowerShell 5.1 + WinForms, входит в Windows) |
 | `start/engine.py` | все решения: пути, хеши, порядок шагов, отказы |
 | `start/pinned.py` | закреплённые адреса и SHA-256 инструментов |
