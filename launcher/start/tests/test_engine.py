@@ -1102,3 +1102,269 @@ class PipelineLeakTests(unittest.TestCase):
         start = text.index("$play.Add_Click({")
         body = text[start : text.index("$setup.Add_Click({")]
         self.assertIn("Не удалось сохранить настройки", body)
+
+class ProgressTests(unittest.TestCase):
+    """The player asked for a signal that a long step is still running."""
+
+    def sink(self) -> tuple:
+        import json
+
+        scratch = tempfile.mkdtemp()
+        path = Path(scratch) / "progress.jsonl"
+        progress = engine.Progress(engine.FileProgressSink(path))
+        return progress, path, json
+
+    def test_a_download_reports_begin_progress_end(self) -> None:
+        import hashlib
+
+        progress, path, json = self.sink()
+
+        class Response:
+            def __init__(self, payload):
+                self.headers = {"Content-Length": str(len(payload))}
+                self.payload, self.position = payload, 0
+
+            def read(self, size):
+                block = self.payload[self.position : self.position + size]
+                self.position += len(block)
+                return block
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *rest):
+                return False
+
+        payload = b"z" * (2 * 1024 * 1024)
+        destination = path.parent / "tool.bin"
+        engine.download(
+            "https://example.invalid/tool.bin",
+            destination,
+            expected_sha256=hashlib.sha256(payload).hexdigest(),
+            label="Тест",
+            opener=lambda request, timeout=None: Response(payload),
+            echo=lambda line: None,
+            progress=progress,
+        )
+        events = [json.loads(line) for line in path.read_text().splitlines()]
+        kinds = [event["kind"] for event in events]
+        self.assertEqual(kinds[0], "begin")
+        self.assertEqual(kinds[-1], "end")
+        self.assertIn("progress", kinds)
+        counted = [e for e in events if e["kind"] == "progress"]
+        self.assertEqual(counted[-1]["done"], len(payload))
+        self.assertEqual(counted[-1]["total"], len(payload))
+
+    def test_a_child_process_gets_a_heartbeat(self) -> None:
+        # A converter or a Blender pass runs for minutes; without this the
+        # window looks frozen.
+        import sys as _sys
+
+        progress, path, json = self.sink()
+        runner = engine.Runner(echo=lambda line: None, progress=progress)
+        runner.run([_sys.executable, "-c", "import time; time.sleep(0.1)"])
+        kinds = [json.loads(line)["kind"] for line in path.read_text().splitlines()]
+        self.assertEqual(kinds, ["begin", "end"])
+
+    def test_a_broken_sink_never_breaks_a_step(self) -> None:
+        # Reporting progress must not be able to fail the work it reports on.
+        def explode(event):
+            raise RuntimeError("no sink")
+
+        progress = engine.Progress(explode)
+        progress.start("x")
+        progress.update("x", 1, 2)
+        progress.finish("x")
+
+    def test_the_cli_accepts_a_progress_file(self) -> None:
+        import subprocess as sp
+        import sys as _sys
+
+        scratch = Path(tempfile.mkdtemp())
+        settings = scratch / "settings.json"
+        events = scratch / "progress.jsonl"
+        result = sp.run(
+            [
+                _sys.executable,
+                str(Path(__file__).resolve().parent.parent / "engine.py"),
+                "--settings", str(settings),
+                "--progress", str(events),
+                "set", "--install-root", str(scratch / "root"),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(events.exists(), "the progress file must be created")
+
+    def test_the_window_renders_the_bar_and_tails_the_file(self) -> None:
+        window = (Path(__file__).resolve().parent.parent / "launcher.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertIn("function Read-ProgressEvents", window)
+        self.assertIn('"--progress"', window)
+        # The bar must be able to show a real percentage, not only "busy".
+        self.assertIn('$progress.Style = "Blocks"', window)
+        self.assertIn('$progress.Style = "Marquee"', window)
+        self.assertIn("function Format-Bytes", window)
+        # A half-written line must be buffered, not dropped.
+        self.assertIn("$script:progressBuffer", window)
+        # The reason for a failure goes in front of the player, not only a code.
+        self.assertIn("function Show-EngineFailure", window)
+        self.assertIn("Show-EngineFailure -Code $code", window)
+
+class PatchEngineTests(unittest.TestCase):
+    """`git apply` made git a hard requirement; the replacement must hold."""
+
+    def setUp(self) -> None:
+        import sys as _sys
+
+        _sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools"))
+        import apply_patch
+
+        self.apply_patch = apply_patch
+
+    def tree(self) -> Path:
+        scratch = Path(tempfile.mkdtemp())
+        (scratch / "src").mkdir()
+        (scratch / "src" / "a.gd").write_text(
+            "line one\nline two\nline three\nline four\n", encoding="utf-8"
+        )
+        return scratch
+
+    def test_a_plain_addition_applies(self) -> None:
+        root = self.tree()
+        patch = root / "p.patch"
+        patch.write_text(
+            "--- a/src/a.gd\n"
+            "+++ b/src/a.gd\n"
+            "@@ -1,4 +1,5 @@\n"
+            " line one\n"
+            "+inserted\n"
+            " line two\n"
+            " line three\n"
+            " line four\n",
+            encoding="utf-8",
+        )
+        changed = self.apply_patch.apply_patch_file(patch, root)
+        self.assertEqual(changed, ["src/a.gd"])
+        self.assertEqual(
+            (root / "src" / "a.gd").read_text(encoding="utf-8"),
+            "line one\ninserted\nline two\nline three\nline four\n",
+        )
+
+    def test_a_replacement_applies(self) -> None:
+        root = self.tree()
+        patch = root / "p.patch"
+        patch.write_text(
+            "--- a/src/a.gd\n"
+            "+++ b/src/a.gd\n"
+            "@@ -2,2 +2,2 @@\n"
+            "-line two\n"
+            "+line 2\n"
+            " line three\n",
+            encoding="utf-8",
+        )
+        self.apply_patch.apply_patch_file(patch, root)
+        self.assertIn("line 2", (root / "src" / "a.gd").read_text(encoding="utf-8"))
+
+    def test_a_missing_file_is_reported_by_name(self) -> None:
+        root = self.tree()
+        patch = root / "p.patch"
+        patch.write_text(
+            "--- a/src/absent.gd\n+++ b/src/absent.gd\n@@ -1 +1 @@\n-x\n+y\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(self.apply_patch.PatchError) as caught:
+            self.apply_patch.apply_patch_file(patch, root)
+        self.assertIn("absent.gd", str(caught.exception))
+
+    def test_mismatched_context_is_reported_not_silently_skipped(self) -> None:
+        root = self.tree()
+        patch = root / "p.patch"
+        patch.write_text(
+            "--- a/src/a.gd\n"
+            "+++ b/src/a.gd\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-nothing like this\n"
+            "+replacement\n"
+            " line two\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(self.apply_patch.PatchError):
+            self.apply_patch.apply_patch_file(patch, root)
+
+    def test_the_shipped_patch_applies_to_the_pinned_revision(self) -> None:
+        # The repository's own patch is the one that must always work; a broken
+        # patch here means every fresh install dies at step 2.
+        repo = Path(__file__).resolve().parents[3]
+        patches = sorted((repo / "patches").glob("*.patch"))
+        self.assertTrue(patches, "patches/ must not be empty")
+        for patch in patches:
+            files = self.apply_patch.parse_patch(patch.read_text(encoding="utf-8"))
+            self.assertTrue(files)
+            for entry in files:
+                self.assertTrue(entry["hunks"], f"{patch.name}: {entry['path']} has no hunks")
+
+    def test_prepare_does_not_call_git(self) -> None:
+        # The regression: prepare.py ran `git apply`, git was never installed,
+        # and the player saw only "код 1".
+        source = (Path(__file__).resolve().parents[3] / "tools" / "prepare.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("subprocess", source)
+        self.assertNotIn("'git'", source)
+        self.assertIn("apply_patch", source)
+
+class StreamingTests(unittest.TestCase):
+    """A long step must show its output while it runs, not after it exits."""
+
+    def test_child_output_arrives_before_the_child_exits(self) -> None:
+        import sys as _sys
+        import time as _time
+
+        seen: list[tuple] = []
+        started = _time.monotonic()
+        runner = engine.Runner(
+            echo=lambda line: seen.append((_time.monotonic() - started, line))
+        )
+        result = runner.run(
+            [
+                _sys.executable,
+                "-c",
+                "import sys, time\n"
+                "print('early', flush=True)\n"
+                "time.sleep(0.5)\n"
+                "print('late', flush=True)\n",
+            ],
+            capture=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        early = [stamp for stamp, line in seen if line == "early"]
+        self.assertTrue(early, "the first line must be echoed")
+        self.assertLess(early[0], 0.45, "it must arrive while the child still runs")
+
+    def test_each_line_is_echoed_once(self) -> None:
+        import sys as _sys
+
+        seen: list[str] = []
+        runner = engine.Runner(echo=seen.append)
+        runner.run(
+            [_sys.executable, "-c", "print('once', flush=True)\nprint('twice', flush=True)"],
+            capture=True,
+        )
+        self.assertEqual([line for line in seen if line == "once"], ["once"])
+        self.assertEqual([line for line in seen if line == "twice"], ["twice"])
+
+    def test_stderr_and_exit_code_survive(self) -> None:
+        import sys as _sys
+
+        seen: list[str] = []
+        runner = engine.Runner(echo=seen.append)
+        result = runner.run(
+            [_sys.executable, "-c", "import sys\nprint('bad', file=sys.stderr)\nsys.exit(3)"],
+            capture=True,
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("! bad", seen)
+        self.assertEqual(result.stderr.strip(), "bad")
