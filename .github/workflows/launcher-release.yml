@@ -38,7 +38,16 @@ jobs:
           }
           Write-Host "using compiler: $csc"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          & $csc /nologo /target:winexe /optimize+ /r:System.dll /r:System.Windows.Forms.dll /out:dist\AdvancedRandomizer.exe launcher\build\Program.cs
+          # The /r: and /out: flags need an unquoted value, and Windows C#
+          # cannot use a leading "./" on the source path: Build-Error 1508.
+          # Absolute paths avoid the parsing ambiguity entirely.
+          $here = (Get-Location).Path
+          $source = Join-Path $here 'launcher\build\Program.cs'
+          $output = Join-Path $here 'dist\AdvancedRandomizer.exe'
+          Write-Host "source: $source"
+          Write-Host "output: $output"
+          if (-not (Test-Path -LiteralPath $source)) { throw 'Program.cs is missing from the checkout' }
+          & $csc /nologo /target:winexe /optimize+ /r:System.dll /r:System.Windows.Forms.dll "/out:$output" $source
           Write-Host "csc exit code: $LASTEXITCODE"
           if ($LASTEXITCODE -ne 0) {
             Write-Host '--- first errors ---'
