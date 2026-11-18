@@ -5,14 +5,18 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import tarfile
 import tempfile
 import urllib.request
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 REV = 'bf06a22baab9713ca51cfa03d017534e3b4f752c'  # legacy-final, the GDScript Skirmish
-SHA256 = 'aeab1032d6ae7e47fad04aa485044fa0171a3e1f3175a516810a4a60e710bd08'
-URL = f'https://codeload.github.com/Open-BFME/openbfme-godot/tar.gz/{REV}'
+# The commit ZIP, not the tag tarball: GitHub re-packs tagged tarballs on demand,
+# so their bytes (and therefore any hash pin) can change, while a commit ZIP is
+# stable. codeload is also plain HTTPS, which is what the one-click launcher can
+# rely on without the release-asset host.
+SHA256 = '8a84c07fcca5d09549ed6c8582a70060ed58d4bd8ee38983f09e729a392446c8'
+URL = f'https://codeload.github.com/Open-BFME/openbfme-godot/zip/{REV}'
 
 
 def main():
@@ -27,20 +31,27 @@ def main():
     with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
         archive = args.archive
         if archive is None:
-            archive = Path(tmp) / 'source.tar.gz'
+            archive = Path(tmp) / 'source.zip'
             print(f'Downloading {REV}…', flush=True)
             with urllib.request.urlopen(URL, timeout=90) as response, archive.open('wb') as out:
                 shutil.copyfileobj(response, out)
         if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256:
             parser.error('upstream archive SHA-256 mismatch')
-        with tarfile.open(archive) as tar:
-            # Also works on pre-3.12 Python. No links/devices or paths outside tmp.
-            for entry in tar:
-                path = (Path(tmp) / entry.name).resolve()
-                if not path.is_relative_to(tmp) or not (entry.isdir() or entry.isfile()):
-                    parser.error(f'unexpected archive entry: {entry.name}')
-                tar.extract(entry, tmp)
+        with zipfile.ZipFile(archive) as zf:
+            # Regular files only; nothing may land outside tmp.
+            for info in zf.infolist():
+                path = (Path(tmp) / info.filename).resolve()
+                if not path.is_relative_to(tmp):
+                    parser.error(f'unexpected archive entry: {info.filename}')
+                if info.is_dir():
+                    path.mkdir(parents=True, exist_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(info) as src, path.open('wb') as dst:
+                        shutil.copyfileobj(src, dst)
         tree = Path(tmp) / f'openbfme-godot-{REV}'
+        if not tree.is_dir():
+            parser.error('archive does not contain the pinned source tree')
         env = dict(os.environ, GIT_CEILING_DIRECTORIES=tmp)
         for patch in sorted((ROOT / 'patches').glob('*.patch')):
             subprocess.run(['git', 'apply', '--whitespace=nowarn', str(patch)], cwd=tree, env=env, check=True)
