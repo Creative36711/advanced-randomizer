@@ -892,6 +892,27 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('"launcher/start/**"', workflow)
         self.assertNotIn("pull_request:", workflow)
 
+    def test_the_workflow_trigger_shape_is_one_github_accepts(self) -> None:
+        # `tags:` at the same level as `push:` is not a valid event, and GitHub
+        # rejects the whole workflow before running a single step - which looks
+        # exactly like a compiler failure from the outside.
+        import yaml
+
+        workflow = (self.ROOT / ".github" / "workflows" / "launcher-release.yml").read_text(
+            encoding="utf-8"
+        )
+        document = yaml.safe_load(workflow)
+        events = document.get("on", document.get(True))
+        self.assertIn("push", events)
+        self.assertIn("tags", events["push"])
+        self.assertIn("branches", events["push"])
+        for key in events:
+            self.assertIn(
+                key,
+                {"push", "workflow_dispatch", "pull_request", "schedule"},
+                f"unexpected trigger {key}",
+            )
+
     def test_the_readme_names_the_exe_in_the_repository_root(self) -> None:
         readme = (self.ROOT / "README.md").read_text(encoding="utf-8")
         section = readme[readme.index("## Играть"):]
