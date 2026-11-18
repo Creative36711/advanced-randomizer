@@ -852,3 +852,25 @@ class StrictModeTests(unittest.TestCase):
         first_write = text.index("$script:busy = $false")
         first_read = text.index("$script:busy)")
         self.assertLess(first_write, first_read)
+
+class PackagingTests(unittest.TestCase):
+    def test_the_exe_source_is_not_ignored(self) -> None:
+        # .gitignore has a bare `build/` rule; without an exception the exe
+        # source was never committed and the release job failed with
+        # "source file could not be found".
+        root = Path(__file__).resolve().parents[3]
+        source = root / "launcher" / "build" / "Program.cs"
+        self.assertTrue(source.is_file(), "launcher/build/Program.cs is missing")
+
+        rules = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertIn("!launcher/build/", rules)
+
+    def test_the_exe_source_stays_compilable_by_the_framework_compiler(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[2] / "build" / "Program.cs"
+        ).read_text(encoding="ascii")
+        # csc 4.0.30319 is a C# 5 compiler: interpolation and ?. are not there.
+        self.assertNotIn('$"', source)
+        self.assertNotIn("?.", source)
+        self.assertNotIn("nameof(", source)
+        self.assertIn("[STAThread]", source)

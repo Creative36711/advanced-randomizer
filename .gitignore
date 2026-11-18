@@ -3,3 +3,9 @@ build/
 .godot/
 __pycache__/
 *.log
+
+# The exe bootstrapper's source is a program, not build output: the bare
+# `build/` rule above would silently drop it and the release job would fail
+# with "source file not found".
+!launcher/build/
+!launcher/build/Program.cs
