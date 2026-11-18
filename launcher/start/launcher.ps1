@@ -188,7 +188,7 @@ function Invoke-Quiet {
     } catch {
         return @{ Code = -1; Stdout = ""; Stderr = $_.Exception.Message }
     } finally {
-        Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue
+        [void](Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue)
     }
 }
 
@@ -207,8 +207,8 @@ function Ensure-BootstrapPython {
     # engine never runs on a Python that would later be refused.
     # Setting PYTHONHOME or PYTHONPATH globally (some game mods do) breaks any
     # interpreter the launcher inherits, so both are cleared for the engine.
-    Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
-    Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+    [void](Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue)
+    [void](Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue)
 
     $candidates = @()
     if (-not [string]::IsNullOrWhiteSpace($EnginePython)) { $candidates += $EnginePython }
@@ -241,7 +241,7 @@ function Ensure-BootstrapPython {
 
     # Last resort: fetch the pinned build.  When this fails the message names
     # the URL and the folder, so the file can be brought by hand.
-    Write-Log "Python 3.9+ не найден. Скачиваю закреплённую сборку 3.12.13…"
+    [void](Write-Log "Python 3.9+ не найден. Скачиваю закреплённую сборку 3.12.13…")
 
     $script = Join-Path $PSScriptRoot "bootstrap-python.ps1"
     # The interpreter is installed INTO the launcher folder, not next to it:
@@ -249,14 +249,14 @@ function Ensure-BootstrapPython {
     # and nothing is written outside it.
     $output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script -Destination $bootstrapRoot -Quiet 2>&1
     foreach ($line in @($output)) {
-        if ($line) { Write-Log ([string]$line) }
+        if ($line) { [void](Write-Log ([string]$line)) }
     }
     $installed = Get-PinnedPythonPath -Root $bootstrapRoot
     if (-not (Test-Path -LiteralPath $installed -PathType Leaf)) {
         $message = "Не удалось получить Python, на котором работает лаунчер."
-        Write-Log $message
-        Write-Log "Можно поставить Python 3.12 вручную с https://www.python.org/downloads/ и запустить лаунчер снова —"
-        Write-Log "он возьмёт системный Python, если тот 3.9 или новее."
+        [void](Write-Log $message)
+        [void](Write-Log "Можно поставить Python 3.12 вручную с https://www.python.org/downloads/ и запустить лаунчер снова —")
+        [void](Write-Log "он возьмёт системный Python, если тот 3.9 или новее.")
         throw $message
     }
     return $installed
@@ -378,18 +378,26 @@ $form.Controls.Add($progress)
 # Log and engine plumbing
 # ---------------------------------------------------------------------------
 function Write-Log {
+    # [void] everywhere, for the reason in Read-NewLogLines: AppendText returns
+    # nothing useful, but ScrollToCaret and DoEvents can put values on the
+    # pipeline, and a caller that captures this function's output would then be
+    # capturing the wrong thing.
     param([string]$Text)
-    $log.AppendText($Text + [Environment]::NewLine)
+    [void]$log.AppendText($Text + [Environment]::NewLine)
     $log.SelectionStart = $log.TextLength
-    $log.ScrollToCaret()
-    [System.Windows.Forms.Application]::DoEvents()
+    [void]$log.ScrollToCaret()
+    [void][System.Windows.Forms.Application]::DoEvents()
 }
 
 function Read-NewLogLines {
+    # [void] on everything: this function is called inside Invoke-Engine, whose
+    # return value is the exit code. A leaked string would turn that code into
+    # an array, and `@(0) -ne 0` is true - every successful step would look
+    # like a failure, which is exactly what happened.
     param($Reader)
     if ($null -eq $Reader) { return }
     while ($null -ne ($line = $Reader.ReadLine())) {
-        if ($line.Trim().Length -gt 0) { Write-Log $line }
+        if ($line.Trim().Length -gt 0) { [void](Write-Log $line) }
     }
 }
 
@@ -442,7 +450,7 @@ function Invoke-Engine {
     # Re-entrancy guard: DoEvents inside the wait loop can deliver another
     # click, and two engines writing the same settings would corrupt them.
     if ($script:busy) {
-        Write-Log "Ещё идёт предыдущий шаг — дождитесь его окончания."
+        [void](Write-Log "Ещё идёт предыдущий шаг — дождитесь его окончания.")
         return 1
     }
     $script:busy = $true
@@ -457,7 +465,7 @@ function Invoke-Engine {
     try {
         $python = Ensure-BootstrapPython
         $argumentLine = Join-Arguments (@($engine) + $Arguments)
-        Write-Log ("> " + $python + " " + $argumentLine)
+        [void](Write-Log ("> " + $python + " " + $argumentLine))
 
         # -ArgumentList takes ONE string and joins arrays without quoting, so the
         # string is built here with explicit quoting instead.
@@ -499,9 +507,9 @@ function Invoke-Engine {
                 if ($line -and $line.Trim().Length -gt 0) { Write-Log "! $line" }
             }
         }
-        return $process.ExitCode
+        return [int]$process.ExitCode
     } catch {
-        Write-Log ("Ошибка: " + $_.Exception.Message)
+        [void](Write-Log ("Ошибка: " + $_.Exception.Message))
         Write-CrashLog ("Ошибка движка: " + $_.Exception.Message)
         Write-CrashLog ($_.ScriptStackTrace)
         return 1
@@ -520,7 +528,7 @@ function Read-Status {
     try {
         $python = Ensure-BootstrapPython
     } catch {
-        Write-Log ("Нет Python для лаунчера: " + $_.Exception.Message)
+        [void](Write-Log ("Нет Python для лаунчера: " + $_.Exception.Message))
         return $null
     }
     $logFile = Join-Path ([IO.Path]::GetTempPath()) ("advanced-randomizer-status-" + [Guid]::NewGuid().ToString("N") + ".json")
@@ -624,6 +632,22 @@ function Refresh-Status {
     $setup.Enabled = -not $script:busy
 }
 
+function Get-ExitCode {
+    # Defensive: take the LAST value a function emitted and coerce it to a
+    # number. PowerShell turns "a string and a number" into an array, and
+    # @(0) -ne 0 is true, so a leaked log line used to make every successful
+    # step look like a failure and the autopilot never started.
+    param($Value)
+    if ($null -eq $Value) { return 1 }
+    if ($Value -is [array]) {
+        if ($Value.Count -eq 0) { return 1 }
+        $Value = $Value[-1]
+    }
+    $number = 0
+    if ([int]::TryParse([string]$Value, [ref]$number)) { return $number }
+    return 1
+}
+
 function Save-Fields {
     $arguments = @("set")
     # An ordered array of pairs, not a hashtable: in PowerShell 5.1 neither
@@ -639,7 +663,7 @@ function Save-Fields {
         $value = Get-FieldText -Tag $field[0]
         if ($value) { $arguments += @($field[1], $value) }
     }
-    return (Invoke-Engine -Arguments $arguments)
+    return (Get-ExitCode (Invoke-Engine -Arguments $arguments))
 }
 
 $quit.Add_Click({ $form.Close() })
@@ -651,11 +675,17 @@ $play.Add_Click({
             "Advanced Randomizer") | Out-Null
         return
     }
-    if ((Save-Fields) -ne 0) { Refresh-Status; return }
+    # A failed save is reported, not swallowed: silently returning is what made
+    # four "set" runs in a row look like nothing happening.
+    if ((Get-ExitCode (Save-Fields)) -ne 0) {
+        [void](Write-Log "Не удалось сохранить настройки. Причина — в логе выше.")
+        Refresh-Status
+        return
+    }
     # One button for the player: prepare whatever is missing, then launch.
     # Before this, PLAY silently refused until a separate setup run finished,
     # and the refusal was a disabled button - invisible.
-    $code = Invoke-Engine -Arguments @("autopilot")
+    $code = Get-ExitCode (Invoke-Engine -Arguments @("autopilot"))
     if ($code -ne 0) {
         Write-Log "Подготовка остановилась (код $code). Причина — в логе выше."
     }
@@ -663,8 +693,8 @@ $play.Add_Click({
 })
 
 $setup.Add_Click({
-    if ((Save-Fields) -ne 0) { Refresh-Status; return }
-    $code = Invoke-Engine -Arguments @("autopilot")
+    if ((Get-ExitCode (Save-Fields)) -ne 0) { Refresh-Status; return }
+    $code = Get-ExitCode (Invoke-Engine -Arguments @("autopilot"))
     if ($code -eq 0) {
         Write-Log "Готово."
     } else {
@@ -674,14 +704,14 @@ $setup.Add_Click({
 })
 
 $full.Add_Click({
-    if ((Save-Fields) -ne 0) { Refresh-Status; return }
+    if ((Get-ExitCode (Save-Fields)) -ne 0) { Refresh-Status; return }
     $answer = [System.Windows.Forms.MessageBox]::Show(
         "Полная конвертация RotWK (7 фракций и 10 карт) занимает от 40 минут до нескольких часов и требует около 20 ГБ свободного места. Продолжить?",
         "Advanced Randomizer",
         [System.Windows.Forms.MessageBoxButtons]::YesNo,
         [System.Windows.Forms.MessageBoxIcon]::Question)
     if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-    $code = Invoke-Engine -Arguments @("full")
+    $code = Get-ExitCode (Invoke-Engine -Arguments @("full"))
     if ($code -eq 0) {
         Write-Log "Полный контент RotWK готов."
     } else {

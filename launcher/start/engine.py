@@ -1612,7 +1612,15 @@ def main(argv: list[str] | None = None) -> int:
             if patch and settings.patch202_root is None:
                 settings.patch202_root = patch
             save_settings(settings, settings_path)
-            print(json.dumps(status(settings), indent=2, ensure_ascii=False))
+            # One short line: `set` is called before every button press, and a
+            # full status dump here turned the log box into a wall of JSON the
+            # player cannot read.  `status` still prints the whole document.
+            report = status(settings)
+            active = report.get("activePack") or "нет"
+            print(
+                f"Настройки сохранены. Папка лаунчера: {report.get('installRoot')}. "
+                f"Пак: {active}."
+            )
             return EXIT_OK
         if args.command == "set":
             if args.install_root is not None:
@@ -1630,7 +1638,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.auto_seed is not None:
                 settings.auto_seed = args.auto_seed == "on"
             save_settings(settings, settings_path)
-            print(json.dumps(status(settings), indent=2, ensure_ascii=False))
+            # One short line: `set` runs before every button press, and a full
+            # status dump here turned the log box into a wall of JSON the player
+            # cannot read.  `status` still prints the whole document.
+            report = status(settings)
+            active = report.get("activePack") or "нет"
+            print(
+                f"Настройки сохранены. Папка лаунчера: {report.get('installRoot')}. "
+                f"Пак: {active}."
+            )
             return EXIT_OK
         if args.command == "python":
             print(ensure_python(settings, runner))
