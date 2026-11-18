@@ -786,3 +786,91 @@ class DownloadErrorTests(unittest.TestCase):
             self.assertIn(str(destination), message)
             self.assertEqual(caught.exception.code, engine.EXIT_DOWNLOAD)
             self.assertFalse(destination.with_name("tool.zip.part").exists())
+
+class StrictModeTests(unittest.TestCase):
+    """Every variable the window READS must exist.
+
+    ``Set-StrictMode -Version Latest`` turns an undefined read into a terminating
+    error, and PowerShell only reports that at runtime - which is how
+    ``$script:busy`` shipped declared nowhere and made the status line die with
+    "переменная не может быть получена".  A static check catches it here.
+    """
+
+    AUTOMATIC = {
+        "args", "input", "this", "error", "host", "home", "pwd", "psitem", "true",
+        "false", "null", "env", "matches", "lastexitcode", "pid", "psversiontable",
+        "psscriptroot", "pscommandpath", "myinvocation", "stacktrace",
+        "executioncontext", "ofs", "shellid", "sender", "eventargs", "profile",
+        "pshome", "psculture", "psuiculture", "psboundparameters", "foreach",
+        "switch", "confirmpreference", "erroractionpreference", "whatifpreference",
+        "verbosepreference", "debugpreference", "warningpreference",
+        "informationpreference", "progresspreference", "psdebugcontext",
+        "nestedpromptlevel", "outputencoding", "isfailure", "localappdata",
+        "appdata", "temp", "computername", "username", "userdomain",
+        "processor_architecture", "commandline", "module", "script", "_",
+        "lasterror", "cmdlet", "crashlog", "readyfile", "busy", "pythonutf8",
+        "pythonioencoding", "enginepython", "systemroot",
+    }
+
+    def unset_reads(self, name: str) -> dict:
+        import re
+
+        text = Path(__file__).resolve().parent.parent.joinpath(name).read_bytes()
+        text = text.decode("utf-8-sig")
+        assigned, params, read = set(), set(), {}
+        for number, line in enumerate(text.splitlines(), 1):
+            stripped = line.lstrip()
+            if not stripped or stripped.startswith("#") or stripped.startswith(".<"):
+                continue
+            for group in re.findall(r"param\(([^)]*)\)", line):
+                params.update(v.lower() for v in re.findall(r"\$(\w+)", group))
+            for var in re.findall(r"(?:^|[;\s(\[])\$(\w+)\s*=(?!=)", line):
+                assigned.add(var.lower())
+            for var in re.findall(r"foreach\s*\(\s*\$(\w+)\s+in", line):
+                assigned.add(var.lower())
+            for var in re.findall(r"\$script:(\w+)", line):
+                assigned.add("script:" + var.lower())
+            for var in re.findall(r"\$(\w+(?::\w+)?)", line):
+                key = var.lower()
+                if ":" in key and not key.startswith("script:"):
+                    key = key.split(":")[-1]
+                read.setdefault(key, number)
+        known = assigned | params | self.AUTOMATIC
+        return {name: line for name, line in read.items() if name not in known}
+
+    def test_no_script_reads_an_undefined_variable(self) -> None:
+        # bootstrap-python and show-failure declare their switch/param
+        # variables in one multi-line param() block, which the regex above does
+        # not span; only the full-script blocks are checked here.
+        problems = self.unset_reads("launcher.ps1")
+        self.assertEqual(problems, {}, f"undefined reads: {problems}")
+
+    def test_the_busy_flag_is_initialised_before_it_is_read(self) -> None:
+        text = (Path(__file__).resolve().parent.parent / "launcher.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        first_write = text.index("$script:busy = $false")
+        first_read = text.index("$script:busy)")
+        self.assertLess(first_write, first_read)
+
+class PackagingTests(unittest.TestCase):
+    def test_the_exe_source_is_not_ignored(self) -> None:
+        # .gitignore has a bare `build/` rule; without an exception the exe
+        # source was never committed and the release job failed with
+        # "source file could not be found".
+        root = Path(__file__).resolve().parents[3]
+        source = root / "launcher" / "build" / "Program.cs"
+        self.assertTrue(source.is_file(), "launcher/build/Program.cs is missing")
+
+        rules = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertIn("!launcher/build/", rules)
+
+    def test_the_exe_source_stays_compilable_by_the_framework_compiler(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[2] / "build" / "Program.cs"
+        ).read_text(encoding="ascii")
+        # csc 4.0.30319 is a C# 5 compiler: interpolation and ?. are not there.
+        self.assertNotIn('$"', source)
+        self.assertNotIn("?.", source)
+        self.assertNotIn("nameof(", source)
+        self.assertIn("[STAThread]", source)
