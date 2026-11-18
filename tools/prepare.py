@@ -22,6 +22,11 @@ REV = 'bf06a22baab9713ca51cfa03d017534e3b4f752c'  # legacy-final, the GDScript S
 # rely on without the release-asset host.
 SHA256 = '8a84c07fcca5d09549ed6c8582a70060ed58d4bd8ee38983f09e729a392446c8'
 URL = f'https://codeload.github.com/Open-BFME/openbfme-godot/zip/{REV}'
+# codeload answers with `Transfer-Encoding: chunked` and NO Content-Length, so
+# a downloader that waits for the header shows nothing at all - which is what
+# the player saw as "15 minutes and no sign of life".  The size is a property
+# of the pinned revision, so it is measured once and stated here.
+SIZE = 17301881
 
 
 def main():
@@ -39,15 +44,19 @@ def main():
             archive = Path(tmp) / 'source.zip'
             print(f'Скачиваю исходники OpenBFME ({REV[:8]})…', flush=True)
             with urllib.request.urlopen(URL, timeout=90) as response, archive.open('wb') as out:
-                expected = int(response.headers.get('Content-Length') or 0)
+                # Fall back to the pinned size when the server does not say:
+                # chunked responses carry no Content-Length, and "0 bytes of
+                # unknown" is exactly the silence being fixed here.
+                expected = int(response.headers.get('Content-Length') or 0) or SIZE
                 written = 0
+                reported = -1
                 while block := response.read(1024 * 1024):
                     out.write(block)
                     written += len(block)
-                    # A 17 MB archive used to arrive in total silence: the log
-                    # sat on one line and the window looked hung.
-                    if expected:
-                        print(f'  {written // 1048576} МБ из {expected // 1048576} МБ', flush=True)
+                    megabytes = written // 1048576
+                    if megabytes > reported:
+                        reported = megabytes
+                        print(f'  {megabytes} МБ из {expected // 1048576} МБ', flush=True)
         digest = hashlib.sha256()
         with archive.open('rb') as stream:
             while block := stream.read(1024 * 1024):

@@ -1423,3 +1423,102 @@ class ArgumentOrderTests(unittest.TestCase):
         window = self.window()
         self.assertIn("$script:lastEngineLine", window)
         self.assertIn("Игра запущена", window)
+
+class SilentDownloadTests(unittest.TestCase):
+    """The player: "15 minutes and no way to tell if anything downloads"."""
+
+    def test_a_download_without_content_length_still_reports(self) -> None:
+        # codeload answers chunked, with no Content-Length.  The old code
+        # printed nothing at all in that case.
+        import hashlib
+
+        class Chunked:
+            def __init__(self, data):
+                self.headers = {}
+                self.data, self.position = data, 0
+
+            def read(self, size):
+                block = self.data[self.position : self.position + size]
+                self.position += len(block)
+                return block
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *rest):
+                return False
+
+        scratch = Path(tempfile.mkdtemp())
+        events = scratch / "p.jsonl"
+        said: list[str] = []
+        payload = b"w" * (9 * 1024 * 1024)
+        engine.download(
+            "https://example.invalid/source.zip",
+            scratch / "source.zip",
+            expected_sha256=hashlib.sha256(payload).hexdigest(),
+            label="Исходники",
+            echo=said.append,
+            opener=lambda request, timeout=None: Chunked(payload),
+            progress=engine.Progress(engine.FileProgressSink(events)),
+        )
+        self.assertTrue(
+            any("скачано" in line for line in said),
+            f"the log must show bytes even without a total: {said}",
+        )
+        counted = [
+            json.loads(line)
+            for line in events.read_text().splitlines()
+            if json.loads(line)["kind"] == "progress"
+        ]
+        self.assertGreaterEqual(len(counted), 9)
+        self.assertEqual(counted[-1]["total"], 0)
+
+    def test_prepare_reports_the_pinned_size_for_a_chunked_archive(self) -> None:
+        # The real codeload response has no Content-Length; the pinned size is
+        # what makes the progress line possible.
+        import sys as _sys
+
+        _sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools"))
+        import prepare
+
+        self.assertEqual(prepare.SIZE, 17301881)
+
+    def test_every_download_passes_the_progress_sink(self) -> None:
+        # The bug behind "the bar never moves": the parameter existed but no
+        # caller passed it.
+        source = (Path(__file__).resolve().parent.parent / "engine.py").read_text(
+            encoding="utf-8"
+        )
+        calls = source.count("progress=progress")
+        self.assertGreaterEqual(calls, 4, "each download must report its bytes")
+
+
+class FasterStartTests(unittest.TestCase):
+    """The player also asked whether there is a faster way."""
+
+    def window(self) -> str:
+        return (Path(__file__).resolve().parent.parent / "launcher.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+
+    def test_a_running_clock_is_shown_while_a_step_runs(self) -> None:
+        window = self.window()
+        self.assertIn("$lastTick", window)
+        self.assertIn("идёт:", window)
+
+    def test_the_window_shows_a_growing_byte_count_without_a_total(self) -> None:
+        self.assertIn("скачано {1}", self.window())
+
+    def test_pip_is_told_to_show_progress(self) -> None:
+        source = (Path(__file__).resolve().parent.parent / "engine.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("PIP_PROGRESS_BAR", source)
+
+    def test_ffmpeg_has_more_than_one_mirror(self) -> None:
+        import sys as _sys
+
+        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        import pinned
+
+        self.assertGreaterEqual(len(pinned.FFMPEG_URL_CANDIDATES), 2)
