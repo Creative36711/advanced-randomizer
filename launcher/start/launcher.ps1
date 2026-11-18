@@ -37,6 +37,10 @@ $script:readyFile = Join-Path $stateDir "launcher-ready"
 # without this line, and Refresh-Status died on its first read: the window
 # opened, then said nothing at all about the install.
 $script:busy = $false
+$script:progressFile = $null
+$script:progressStream = $null
+$script:progressReader = $null
+$script:progressBuffer = ""
 
 try {
     Remove-Item -LiteralPath $script:crashLog -Force -ErrorAction SilentlyContinue
@@ -365,11 +369,18 @@ $log.Font = New-Object System.Drawing.Font("Consolas", 8.5)
 $log.Anchor = "Top,Bottom,Left,Right"
 $form.Controls.Add($log)
 
+# Progress: a caption with byte counters and a real 0..100 bar.  The bar was a
+# marquee, which only says "busy"; during a 44 MB download that looks frozen.
+$progressCaption = New-Label -Text "" -X 30 -Y 636 -Width 870 -Height 18 -Font $smallFont -Color $muted
+$progressCaption.Visible = $false
+$form.Controls.Add($progressCaption)
+
 $progress = New-Object System.Windows.Forms.ProgressBar
-$progress.Location = New-Object System.Drawing.Point(30, 648)
-$progress.Size = New-Object System.Drawing.Size(870, 8)
-$progress.Style = "Marquee"
-$progress.MarqueeAnimationSpeed = 30
+$progress.Location = New-Object System.Drawing.Point(30, 654)
+$progress.Size = New-Object System.Drawing.Size(870, 12)
+$progress.Minimum = 0
+$progress.Maximum = 100
+$progress.Style = "Blocks"
 $progress.Visible = $false
 $progress.Anchor = "Bottom,Left,Right"
 $form.Controls.Add($progress)
@@ -444,6 +455,111 @@ function Join-Arguments {
     return (($Values | ForEach-Object { Quote-Argument $_ }) -join ' ')
 }
 
+function Format-Bytes {
+    param([double]$Value)
+    # Plain numbers, not 1GB/1MB: those suffixes are a later PowerShell
+    # addition and are easy to mis-scope inside a function.
+    if ($Value -ge 1073741824) { return ('{0:N1} ГБ' -f ($Value / 1073741824)) }
+    if ($Value -ge 1048576) { return ('{0:N1} МБ' -f ($Value / 1048576)) }
+    if ($Value -ge 1024) { return ('{0:N0} КБ' -f ($Value / 1024)) }
+    return ('{0:N0} Б' -f $Value)
+}
+
+function Show-Progress {
+    # Caption + bar.  Percent < 0 means "duration unknown": keep the bar moving
+    # so the window never looks frozen, which is what the player reported.
+    param([string]$Caption, [int]$Percent)
+    if ($Caption) { $progressCaption.Text = $Caption }
+    $progressCaption.Visible = $true
+    $progress.Visible = $true
+    if ($Percent -lt 0) {
+        $progress.Style = "Marquee"
+        $progress.MarqueeAnimationSpeed = 30
+    } else {
+        $progress.Style = "Blocks"
+        $progress.Value = [Math]::Max(0, [Math]::Min(100, $Percent))
+    }
+    [void][System.Windows.Forms.Application]::DoEvents()
+}
+
+function Hide-Progress {
+    $progress.Visible = $false
+    $progressCaption.Visible = $false
+    $progressCaption.Text = ""
+    $progress.Value = 0
+}
+
+function Get-StepCaption {
+    # A human name for the running command, so the bar has a subject.
+    param([string[]]$Arguments)
+    $first = ""
+    if ($Arguments -and $Arguments.Count -gt 0) { $first = [string]$Arguments[0] }
+    switch ($first) {
+        "set" { return "Сохранение настроек" }
+        "autopilot" { return "Подготовка игры" }
+        "launch" { return "Запуск игры" }
+        "full" { return "Полная конвертация RotWK" }
+        "status" { return "Проверка состояния" }
+        default { return $first }
+    }
+}
+
+function Read-ProgressEvents {
+    # Tails the engine's JSON-lines progress file.  A file, not a pipe: the
+    # child keeps writing even while this loop is busy drawing.
+    #
+    # Read what is there as a block and keep the unfinished tail in a buffer.
+    # Reading line by line looked simpler but cut events in half: the file is
+    # being appended to while it is read, so a line can be seen partially -
+    # and a consumed half is gone for good.
+    if (-not $script:progressFile) { return }
+    if ($null -eq $script:progressStream) {
+        if (-not (Test-Path -LiteralPath $script:progressFile -PathType Leaf)) { return }
+        try {
+            $script:progressStream = New-Object System.IO.FileStream($script:progressFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            $script:progressReader = New-Object System.IO.StreamReader($script:progressStream, [System.Text.Encoding]::UTF8)
+        } catch {
+            return
+        }
+    }
+    try {
+        $chunk = $script:progressReader.ReadToEnd()
+    } catch {
+        return
+    }
+    if (-not $chunk) { return }
+    $script:progressBuffer += $chunk
+    $parts = $script:progressBuffer -split "`n"
+    # Everything before the last fragment is complete; the fragment may still
+    # be growing.
+    $script:progressBuffer = $parts[$parts.Count - 1]
+    for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+        $line = $parts[$i].Trim()
+        if (-not $line) { continue }
+        try {
+            $event = $line | ConvertFrom-Json
+        } catch {
+            continue
+        }
+        switch ([string]$event.kind) {
+            "begin" { Show-Progress -Caption ([string]$event.label) -Percent (-1) }
+            "progress" {
+                $total = [double]$event.total
+                $done = [double]$event.done
+                if ($total -gt 0) {
+                    $percent = [int][Math]::Floor(100 * $done / $total)
+                    $caption = "{0}: {1} из {2} ({3}%)" -f $event.label, (Format-Bytes $done), (Format-Bytes $total), $percent
+                    Show-Progress -Caption $caption -Percent $percent
+                } else {
+                    $caption = "{0}: {1}" -f $event.label, (Format-Bytes $done)
+                    Show-Progress -Caption $caption -Percent (-1)
+                }
+            }
+            "end" { Show-Progress -Caption ("{0}: готово" -f $event.label) -Percent 100 }
+        }
+    }
+}
+
 function Invoke-Engine {
     param([string[]]$Arguments)
 
@@ -456,16 +572,23 @@ function Invoke-Engine {
     $script:busy = $true
     $play.Enabled = $false
     $setup.Enabled = $false
-    $progress.Visible = $true
+    Show-Progress -Caption (Get-StepCaption $Arguments) -Percent (-1)
     $logFile = Join-Path ([IO.Path]::GetTempPath()) ("advanced-randomizer-" + [Guid]::NewGuid().ToString("N") + ".log")
     $errFile = "$logFile.err"
     $stream = $null
     $reader = $null
 
     try {
+        Show-Progress -Caption "Подготовка Python" -Percent (-1)
         $python = Ensure-BootstrapPython
-        $argumentLine = Join-Arguments (@($engine) + $Arguments)
+        # The engine writes progress events here; this loop tails the file.
+        $script:progressFile = Join-Path ([IO.Path]::GetTempPath()) ("advanced-randomizer-progress-" + [Guid]::NewGuid().ToString("N") + ".jsonl")
+        $script:progressStream = $null
+        $script:progressReader = $null
+        $script:progressBuffer = ""
+        $argumentLine = Join-Arguments (@("--progress", $script:progressFile, $engine) + $Arguments)
         [void](Write-Log ("> " + $python + " " + $argumentLine))
+        Show-Progress -Caption (Get-StepCaption $Arguments) -Percent (-1)
 
         # -ArgumentList takes ONE string and joins arrays without quoting, so the
         # string is built here with explicit quoting instead.
@@ -516,12 +639,37 @@ function Invoke-Engine {
     } finally {
         if ($reader) { $reader.Dispose() }
         if ($stream) { $stream.Dispose() }
-        Remove-Item -LiteralPath $logFile, $errFile -Force -ErrorAction SilentlyContinue
-        $progress.Visible = $false
+        if ($script:progressReader) { $script:progressReader.Dispose(); $script:progressReader = $null }
+        if ($script:progressStream) { $script:progressStream.Dispose(); $script:progressStream = $null }
+        $tempFiles = @($logFile, $errFile)
+        if ($script:progressFile) { $tempFiles += $script:progressFile }
+        Remove-Item -LiteralPath $tempFiles -Force -ErrorAction SilentlyContinue
+        Hide-Progress
         $script:busy = $false
         $setup.Enabled = $true
         $play.Enabled = $true
     }
+}
+
+function Show-EngineFailure {
+    # The engine writes its last error beside the progress file.  Put that
+    # sentence in front of the player: a bare "код 1" was the complaint.
+    param([int]$Code)
+    if ($Code -eq 0) { return }
+    $reason = ""
+    if ($script:progressFile) {
+        $reasonFile = "$($script:progressFile).error"
+        if (Test-Path -LiteralPath $reasonFile -PathType Leaf) {
+            try { $reason = (Get-Content -LiteralPath $reasonFile -Raw -Encoding UTF8).Trim() } catch { $reason = "" }
+        }
+    }
+    if ($script:progressFile) {
+        $reasonFile = "$($script:progressFile).error"
+        Remove-Item -LiteralPath $reasonFile -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $reason) { $reason = "Подробности — в логе выше." }
+    [void](Write-Log ("Причина: " + $reason))
+    [void][System.Windows.Forms.MessageBox]::Show($reason, "Advanced Randomizer не смог продолжить", "OK", "Warning")
 }
 
 function Read-Status {
@@ -687,7 +835,9 @@ $play.Add_Click({
     # and the refusal was a disabled button - invisible.
     $code = Get-ExitCode (Invoke-Engine -Arguments @("autopilot"))
     if ($code -ne 0) {
-        Write-Log "Подготовка остановилась (код $code). Причина — в логе выше."
+        Show-EngineFailure -Code $code
+    } else {
+        Write-Log "Готово. Запускаю игру."
     }
     Refresh-Status
 })
@@ -698,7 +848,7 @@ $setup.Add_Click({
     if ($code -eq 0) {
         Write-Log "Готово."
     } else {
-        Write-Log "Настройка остановилась (код $code). Исправьте причину выше и нажмите кнопку снова."
+        Show-EngineFailure -Code $code
     }
     Refresh-Status
 })
@@ -715,7 +865,7 @@ $full.Add_Click({
     if ($code -eq 0) {
         Write-Log "Полный контент RotWK готов."
     } else {
-        Write-Log "Полная конвертация остановилась (код $code). Причина — в логе выше."
+        Show-EngineFailure -Code $code
     }
     Refresh-Status
 })

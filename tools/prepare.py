@@ -4,10 +4,15 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
-import subprocess
+import sys
 import tempfile
 import urllib.request
 import zipfile
+
+# The patch engine is this repository's own: `git apply` would make git a hard
+# requirement for a player who has only the game installed.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import apply_patch  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 REV = 'bf06a22baab9713ca51cfa03d017534e3b4f752c'  # legacy-final, the GDScript Skirmish
@@ -32,11 +37,26 @@ def main():
         archive = args.archive
         if archive is None:
             archive = Path(tmp) / 'source.zip'
-            print(f'Downloading {REV}…', flush=True)
+            print(f'Скачиваю исходники OpenBFME ({REV[:8]})…', flush=True)
             with urllib.request.urlopen(URL, timeout=90) as response, archive.open('wb') as out:
-                shutil.copyfileobj(response, out)
-        if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256:
-            parser.error('upstream archive SHA-256 mismatch')
+                expected = int(response.headers.get('Content-Length') or 0)
+                written = 0
+                while block := response.read(1024 * 1024):
+                    out.write(block)
+                    written += len(block)
+                    # A 17 MB archive used to arrive in total silence: the log
+                    # sat on one line and the window looked hung.
+                    if expected:
+                        print(f'  {written // 1048576} МБ из {expected // 1048576} МБ', flush=True)
+        digest = hashlib.sha256()
+        with archive.open('rb') as stream:
+            while block := stream.read(1024 * 1024):
+                digest.update(block)
+        if digest.hexdigest() != SHA256:
+            parser.error(
+                f'контрольная сумма архива не совпала.\n  ожидали: {SHA256}\n'
+                f'  получили: {digest.hexdigest()}\n  файл: {archive}'
+            )
         with zipfile.ZipFile(archive) as zf:
             # Regular files only; nothing may land outside tmp.
             for info in zf.infolist():
@@ -49,16 +69,25 @@ def main():
                     path.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(info) as src, path.open('wb') as dst:
                         shutil.copyfileobj(src, dst)
+        print('Распаковано.', flush=True)
         tree = Path(tmp) / f'openbfme-godot-{REV}'
         if not tree.is_dir():
-            parser.error('archive does not contain the pinned source tree')
-        env = dict(os.environ, GIT_CEILING_DIRECTORIES=tmp)
-        for patch in sorted((ROOT / 'patches').glob('*.patch')):
-            subprocess.run(['git', 'apply', '--whitespace=nowarn', str(patch)], cwd=tree, env=env, check=True)
+            parser.error('в архиве нет ожидаемого дерева исходников')
+        patches = sorted((ROOT / 'patches').glob('*.patch'))
+        if not patches:
+            parser.error('в репозитории нет patches/*.patch — собирать нечего')
+        for patch in patches:
+            print(f'Применяю {patch.name}…', flush=True)
+            try:
+                changed = apply_patch.apply_patch_file(patch, tree)
+            except apply_patch.PatchError as error:
+                parser.error(f'{patch.name}: {error}')
+            print(f'  изменено файлов: {len(changed)}', flush=True)
         if (ROOT / 'game').is_dir():
             shutil.copytree(ROOT / 'game', tree / 'game', dirs_exist_ok=True)
         tree.rename(dest)
-    print(f'Open {dest / "game/project.godot"} with Godot 4.7.2.')
+    print(f'Готово: {dest}')
+    print(f'Открывать в Godot 4.7.2: {dest / "game/project.godot"}')
 
 
 if __name__ == '__main__':

@@ -268,6 +268,55 @@ class DownloadError(LauncherError):
         super().__init__(message, EXIT_DOWNLOAD)
 
 
+class Progress:
+    """Where "how far along this step is" goes.
+
+    The window renders it as a growing bar; a terminal run renders it as plain
+    text.  Everything is optional: a missing or silent sink must never break a
+    step, because a launcher that dies while reporting progress is worse than
+    one that reports nothing.
+    """
+
+    def __init__(self, sink=None) -> None:
+        self.sink = sink
+
+    def start(self, label: str) -> None:
+        self._emit({"kind": "begin", "label": label})
+
+    def update(self, label: str, done: int, total: int = 0) -> None:
+        self._emit({"kind": "progress", "label": label, "done": int(done), "total": int(total)})
+
+    def finish(self, label: str) -> None:
+        self._emit({"kind": "end", "label": label})
+
+    def _emit(self, event: dict) -> None:
+        if self.sink is None:
+            return
+        try:
+            self.sink(event)
+        except Exception:  # noqa: BLE001 - progress must never abort a step
+            pass
+
+
+class FileProgressSink:
+    """JSON-lines sink a GUI can tail without a pipe.
+
+    A pipe would need the writer to keep flushing and the reader to keep
+    draining; a growing file is inert, survives a window that stalls, and can
+    be inspected after the fact.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+
+    def __call__(self, event: dict) -> None:
+        with self.path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+            stream.flush()
+
+
 def download(
     url: str,
     destination: Path,
@@ -278,6 +327,7 @@ def download(
     echo=print,
     opener=urllib.request.urlopen,
     allow_unpinned: bool = False,
+    progress: "Progress | None" = None,
 ) -> Path:
     """Stream ``url`` into ``destination`` and verify it before it exists.
 
@@ -291,6 +341,7 @@ def download(
     """
 
     label = label or destination.name
+    progress = progress or Progress()
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(destination.name + ".part")
     temporary.unlink(missing_ok=True)
@@ -299,6 +350,7 @@ def download(
             f"{label}: SHA-256 не закреплён в лаунчере, скачивание не начато."
         )
     echo(f"Скачиваю {label}…")
+    progress.start(label)
     request = urllib.request.Request(
         url, headers={"User-Agent": "AdvancedRandomizer/1.0"}
     )
@@ -318,6 +370,10 @@ def download(
                             f"{label}: сервер отдал больше {human_bytes(expected_size)}; "
                             "загрузка прервана."
                         )
+                    if total:
+                        progress.update(label, written, total)
+                    # A text line every 16 MiB as well: the window shows a bar,
+                    # but a terminal run and the log file need words.
                     if total and written % (16 * 1024 * 1024) < len(block):
                         echo(f"  {human_bytes(written)} из {human_bytes(total)}")
     except DownloadError:
@@ -352,6 +408,7 @@ def download(
             f"  получено  {measured}"
         )
     os.replace(temporary, destination)
+    progress.finish(label)
     echo(
         f"Готово: {label} ({human_bytes(written)}, "
         f"{time.monotonic() - started:.0f} c)"
@@ -387,7 +444,14 @@ def extract_tar_gz(archive: Path, destination: Path, *, label: str = "") -> None
                 raise LauncherError(
                     f"{label or archive.name}: архив пытается писать вне папки назначения."
                 )
-        tf.extractall(destination)
+        # Python 3.12+ wants the extraction filter spelled out; without it the
+        # log gets a DeprecationWarning and the player reads it as a problem.
+        # "data" is the safe default: it drops absolute paths, links and the
+        # other tricks, which is exactly what the check above enforces.
+        if hasattr(tarfile, "data_filter"):
+            tf.extractall(destination, filter="data")
+        else:
+            tf.extractall(destination)
 
 
 # ---------------------------------------------------------------------------
@@ -641,8 +705,9 @@ class Runner:
     which is how OPENBFME_CONTENT and PATH reach Godot and the importer.
     """
 
-    def __init__(self, echo=print) -> None:
+    def __init__(self, echo=print, progress: "Progress | None" = None) -> None:
         self.echo = echo
+        self.progress = progress or Progress()
 
     def run(
         self,
@@ -660,19 +725,38 @@ class Runner:
         creationflags = 0
         if os.name == "nt":
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        process = subprocess.run(
-            args,
-            cwd=str(cwd) if cwd else None,
-            env=merged,
-            text=True,
-            capture_output=bool(capture),
-            check=False,
-            creationflags=creationflags,
-        )
-        if capture:
-            if process.stdout:
-                for line in process.stdout.splitlines():
-                    self.echo(line)
+        # A subprocess that runs for minutes (a converter, a Blender pass, a
+        # 17 MB download) must not look like a frozen window.  Two signals:
+        # its output is streamed as it arrives, and the progress sink is told
+        # the step began and ended.
+        progress = getattr(self, "progress", None)
+        label = Path(args[0]).stem if args else "step"
+        if progress is not None:
+            progress.start(label)
+        try:
+            streamed = bool(capture)
+            if capture:
+                process = self._run_streaming(
+                    args, cwd, merged, creationflags
+                )
+            else:
+                process = subprocess.run(
+                    args,
+                    cwd=str(cwd) if cwd else None,
+                    env=merged,
+                    text=True,
+                    capture_output=False,
+                    check=False,
+                    creationflags=creationflags,
+                )
+        finally:
+            if progress is not None:
+                progress.finish(label)
+        # Streaming already echoed every line; echoing the collected copy
+        # again would print the step's whole output twice in the log.
+        if capture and not streamed and getattr(process, "stdout", None):
+            for line in process.stdout.splitlines():
+                self.echo(line)
             if process.stderr:
                 for line in process.stderr.splitlines():
                     self.echo("! " + line)
@@ -682,6 +766,52 @@ class Runner:
                 EXIT_TOOL,
             )
         return process
+
+
+    def _run_streaming(self, args, cwd, merged, creationflags):
+        """Run a child, echoing each line as it arrives, and keep the text.
+
+        ``subprocess.run(capture_output=True)`` returns nothing until the
+        process exits, which is why a long step used to show a single ``$``
+        line and then nothing.  Here stdout and stderr are read line by line
+        while the child works; the collected text is still available to the
+        caller for an error message.
+        """
+
+        process = subprocess.Popen(
+            args,
+            cwd=str(cwd) if cwd else None,
+            env=merged,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=creationflags,
+        )
+        collected_out: list[str] = []
+        collected_err: list[str] = []
+        # stderr is drained on its own thread: a child that writes a lot to
+        # either pipe would block on a full buffer otherwise.
+        def drain_err() -> None:
+            assert process.stderr is not None
+            for line in process.stderr:
+                line = line.rstrip("\n")
+                collected_err.append(line)
+                self.echo("! " + line)
+
+        import threading
+
+        thread = threading.Thread(target=drain_err, daemon=True)
+        thread.start()
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = line.rstrip("\n")
+            collected_out.append(line)
+            self.echo(line)
+        code = process.wait()
+        thread.join(timeout=5)
+        return subprocess.CompletedProcess(
+            args, code, "\n".join(collected_out), "\n".join(collected_err)
+        )
 
 
 def _quote(part: str) -> str:
@@ -917,11 +1047,24 @@ def step_prepare(settings: Settings, runner: Runner, *, echo=print) -> Path:
             EXIT_STATE,
         )
     root.mkdir(parents=True, exist_ok=True)
-    runner.run(
+    # prepare.py applies the repository's patches with tools/apply_patch.py,
+    # which is pure standard library.  It used to call `git apply`, and git was
+    # only fetched three steps later - and could not be fetched at all, because
+    # the MinGit archive is not pinned.  The failure was also invisible: the
+    # child's output was not captured, so the player saw "код 1" and nothing.
+    result = runner.run(
         [str(python), str(prepare), "--output", str(tree)],
         cwd=repo_root,
-        check=True,
+        capture=True,
     )
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout or "").strip()
+        tail = "\n".join(details.splitlines()[-12:]) if details else "(вывод пуст)"
+        raise LauncherError(
+            "Не удалось собрать исходники OpenBFME "
+            f"(код {result.returncode}). Последние строки вывода:\n{tail}",
+            EXIT_TOOL,
+        )
     if not source_ready(root):
         raise LauncherError(
             "Сборка завершилась, но дерева на месте нет. Смотрите лог выше.",
@@ -1070,13 +1213,21 @@ def step_bootstrap_tools(settings: Settings, runner: Runner, *, echo=print) -> N
     python = venv_python(root)
     if not python.is_file():
         raise LauncherError("Окружение импортёра не готово: сначала шаг «venv».", EXIT_STATE)
-    git = ensure_git(settings, echo=echo)
-    ffmpeg = ensure_ffmpeg(settings, echo=echo)
+    # The importer's Blender bootstrap clones the W3D plugin, so git is still
+    # welcome here - but only when the machine has one.  Without it the
+    # importer reports what it skipped, and the conversion below still works
+    # for everything that does not need Blender.
+    git = find_system_git()
     environment = {
-        "PATH": git_environment(git)["PATH"],
         "OPENBFME_IMPORT_ROOT": str(state_root(root)),
         "PYTHONPATH": str(tree / "importer"),
     }
+    if git is not None:
+        environment["PATH"] = git_environment(git)["PATH"]
+        echo(f"git: {git}")
+    else:
+        echo("git не найден — Blender-плагин не будет скачан, остальное не зависит от него.")
+    ffmpeg = ensure_ffmpeg(settings, echo=echo)
     runner.run(
         [
             str(python),
@@ -1541,6 +1692,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--settings", type=Path, default=None, help="settings.json (default: per-user)"
     )
+    parser.add_argument(
+        "--progress",
+        type=Path,
+        help="write progress events (JSON lines) here, for a GUI to read",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     status_parser = sub.add_parser("status", help="report every readiness flag as JSON")
@@ -1583,7 +1739,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     settings_path = (args.settings or default_settings_path()).expanduser()
     settings = load_settings(settings_path)
-    runner = Runner(echo=print)
+    sink = FileProgressSink(args.progress) if getattr(args, "progress", None) else None
+    runner = Runner(echo=print, progress=Progress(sink))
     try:
         if args.command == "status":
             overrides = status_overrides(args)
@@ -1683,6 +1840,15 @@ def main(argv: list[str] | None = None) -> int:
             return autopilot(settings, runner)
     except LauncherError as error:
         print(f"ОШИБКА: {error}", file=sys.stderr)
+        # The window reads this file and shows the reason in a message box; the
+        # player reported that "код 1" alone explains nothing.
+        sink = getattr(args, "progress", None)
+        if sink is not None:
+            try:
+                reason = sink.with_name(sink.name + ".error")
+                reason.write_text(str(error), encoding="utf-8")
+            except OSError:
+                pass
         return error.code
     except KeyboardInterrupt:
         print("Отменено игроком.", file=sys.stderr)
