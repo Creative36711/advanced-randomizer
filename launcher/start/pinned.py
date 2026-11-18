@@ -80,7 +80,12 @@ FFPROBE_EXE_SHA256 = "0fde260f5abd35c9cafd96f594cc76365a780c1b73a90e35b6a3409ea1
 #: Mirrors, in order.  The archive changes upstream, so it is not pinned; the
 #: two executables inside it are (they must equal the importer's constants).
 FFMPEG_URL_CANDIDATES: tuple[str, ...] = (
+    # gyan.dev first: it is the build the pinned digests were measured on.
     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+    # The same author's GitHub releases.  The player's log had gyan.dev fail
+    # with an SSL EOF while GitHub answered; one mirror is not a source list.
+    "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip",
+    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-7.1.zip",
 )
 
 OPENBFME_SOURCE_RELATIVE = Path("openbfme")

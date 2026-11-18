@@ -42,6 +42,7 @@ $script:progressStream = $null
 $script:progressReader = $null
 $script:progressBuffer = ""
 $script:lastEngineLine = ""
+$script:lastEngineWasError = $false
 
 try {
     Remove-Item -LiteralPath $script:crashLog -Force -ErrorAction SilentlyContinue
@@ -411,6 +412,7 @@ function Read-NewLogLines {
     while ($null -ne ($line = $Reader.ReadLine())) {
         if ($line.Trim().Length -gt 0) {
             $script:lastEngineLine = $line
+            if ($line -match "^ОШИБКА|^! ОШИБКА") { $script:lastEngineWasError = $true }
             [void](Write-Log $line)
         }
     }
@@ -555,7 +557,10 @@ function Read-ProgressEvents {
                     $caption = "{0}: {1} из {2} ({3}%)" -f $event.label, (Format-Bytes $done), (Format-Bytes $total), $percent
                     Show-Progress -Caption $caption -Percent $percent
                 } else {
-                    $caption = "{0}: {1}" -f $event.label, (Format-Bytes $done)
+                    # No total from the server: show the growing byte count.
+                    # A number that keeps rising is proof of life; a marquee
+                    # that never changes reads as "frozen".
+                    $caption = "{0}: скачано {1}" -f $event.label, (Format-Bytes $done)
                     Show-Progress -Caption $caption -Percent (-1)
                 }
             }
@@ -591,6 +596,7 @@ function Invoke-Engine {
         $script:progressReader = $null
         $script:progressBuffer = ""
         $script:lastEngineLine = ""
+        $script:lastEngineWasError = $false
         # Everything after the script path goes to the script; before it, to
         # Python.  `--progress` before `engine.py` made Python print
         # "unknown option --progress" and exit, and the launcher called that a
@@ -627,13 +633,26 @@ function Invoke-Engine {
         $stream = New-Object System.IO.FileStream($logFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
         $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
 
+        $started = Get-Date
+        $lastTick = $started
         while (-not $process.HasExited) {
             Start-Sleep -Milliseconds 150
             [System.Windows.Forms.Application]::DoEvents()
             Read-NewLogLines -Reader $reader
+            Read-ProgressEvents
+            # A clock that keeps moving is the one signal that survives every
+            # step, including the slow ones that report nothing of their own:
+            # "it has been 6 minutes" is proof of life by itself.
+            if (((Get-Date) - $lastTick).TotalSeconds -ge 1) {
+                $lastTick = Get-Date
+                $elapsed = [int](((Get-Date) - $started).TotalSeconds)
+                $clock = "{0}:{1:D2}" -f [int][Math]::Floor($elapsed / 60), ($elapsed % 60)
+                $form.Text = "Advanced Randomizer — идёт: {0} ({1})" -f (Get-StepCaption $Arguments), $clock
+            }
         }
         $process.WaitForExit()
         Read-NewLogLines -Reader $reader
+        Read-ProgressEvents
 
         $hadError = $false
         if (Test-Path -LiteralPath $errFile -PathType Leaf) {
@@ -645,7 +664,13 @@ function Invoke-Engine {
                 }
             }
         }
-        $code = [int]$process.ExitCode
+        # [int]$null is 0 in PowerShell, so an ExitCode that never got set
+        # (Start-Process -PassThru can leave it null) would look like success -
+        # exactly the "Подготовка завершена" the player got after a real
+        # failure.  Unknown is a failure, never a success.
+        $process.Refresh()
+        $code = 1
+        if ($null -ne $process.ExitCode) { $code = [int]$process.ExitCode }
         # Every real step reports either what it did or what went wrong.  A run
         # that printed NOTHING and exited on its own is not a success: it never
         # reached the engine.  This is what turned "unknown option --progress"
@@ -671,6 +696,7 @@ function Invoke-Engine {
         if ($script:progressFile) { $tempFiles += $script:progressFile }
         Remove-Item -LiteralPath $tempFiles -Force -ErrorAction SilentlyContinue
         Hide-Progress
+        $form.Text = "Advanced Randomizer"
         $script:busy = $false
         $setup.Enabled = $true
         $play.Enabled = $true
@@ -867,6 +893,10 @@ $play.Add_Click({
         # Запускаю игру." appeared even when the engine had not run at all.
         if ($script:lastEngineLine -match "Игра запущена") {
             Write-Log "Готово. Игра запущена."
+        } elseif ($script:lastEngineWasError) {
+            # The engine reported an error in its own output; the code got
+            # lost on the way out.  Never call that "подготовка завершена".
+            Show-EngineFailure -Code 1
         } else {
             Write-Log "Подготовка завершена, но запуск не подтверждён — смотрите последние строки лога."
         }

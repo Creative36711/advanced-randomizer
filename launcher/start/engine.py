@@ -372,10 +372,18 @@ def download(
                         )
                     if total:
                         progress.update(label, written, total)
-                    # A text line every 16 MiB as well: the window shows a bar,
-                    # but a terminal run and the log file need words.
-                    if total and written % (16 * 1024 * 1024) < len(block):
-                        echo(f"  {human_bytes(written)} из {human_bytes(total)}")
+                        # A text line every 16 MiB as well: the window shows a
+                        # bar, but a terminal run and the log file need words.
+                        if written % (16 * 1024 * 1024) < len(block):
+                            echo(f"  {human_bytes(written)} из {human_bytes(total)}")
+                    else:
+                        # No Content-Length (chunked response) - and a sink
+                        # with no total draws only a marquee, so the player
+                        # sees "nothing is happening".  Print bytes every
+                        # 4 MiB and report a growing figure instead.
+                        progress.update(label, written, 0)
+                        if written % (4 * 1024 * 1024) < len(block):
+                            echo(f"  скачано {human_bytes(written)}")
     except DownloadError:
         temporary.unlink(missing_ok=True)
         raise
@@ -827,7 +835,7 @@ def pinned_python_archive(install_root: Path) -> Path:
     return downloads_dir(install_root) / PINNED_PYTHON.archive_name
 
 
-def ensure_python(settings: Settings, runner: Runner, *, echo=print) -> Path:
+def ensure_python(settings: Settings, runner: Runner, *, echo=print, progress=None) -> Path:
     """Install the importer's exact interpreter, or reuse the local copy.
 
     The archive is looked for in ``<install root>/downloads`` FIRST.  A player
@@ -858,6 +866,7 @@ def ensure_python(settings: Settings, runner: Runner, *, echo=print) -> Path:
                 expected_sha256=PINNED_PYTHON.sha256,
                 label=f"Python {PINNED_PYTHON.version}",
                 echo=echo,
+                progress=progress,
             )
         except DownloadError as error:
             raise DownloadError(
@@ -900,7 +909,7 @@ def find_system_git() -> Path | None:
     return Path(found) if found else None
 
 
-def ensure_git(settings: Settings, *, echo=print) -> Path:
+def ensure_git(settings: Settings, *, echo=print, progress=None) -> Path:
     root = _install_root(settings)
     local = mingit_dir(root) / "cmd" / "git.exe"
     if local.is_file():
@@ -916,6 +925,7 @@ def ensure_git(settings: Settings, *, echo=print) -> Path:
             expected_sha256=MINGIT_64_ZIP.sha256,
             label="Git (MinGit)",
             echo=echo,
+            progress=progress,
         )
     extract_zip(archive, mingit_dir(root), label="MinGit")
     if not local.is_file():
@@ -934,7 +944,7 @@ def git_environment(git: Path) -> dict[str, str]:
     return {"PATH": directory + os.pathsep + current}
 
 
-def ensure_ffmpeg(settings: Settings, *, echo=print, opener=urllib.request.urlopen) -> Path:
+def ensure_ffmpeg(settings: Settings, *, echo=print, opener=urllib.request.urlopen, progress=None) -> Path:
     """Install the one ffmpeg build the importer will accept.
 
     The archive may move upstream, so it is not pinned as an archive; the two
@@ -947,6 +957,7 @@ def ensure_ffmpeg(settings: Settings, *, echo=print, opener=urllib.request.urlop
     if target.is_file() and sha256_file(target) == FFMPEG_EXE_SHA256:
         return target
     last_error: Exception | None = None
+    attempts: list[str] = []
     for url in FFMPEG_URL_CANDIDATES:
         archive = downloads_dir(root) / "ffmpeg.zip"
         archive.unlink(missing_ok=True)
@@ -957,12 +968,15 @@ def ensure_ffmpeg(settings: Settings, *, echo=print, opener=urllib.request.urlop
                 expected_sha256=None,
                 label="FFmpeg",
                 echo=echo,
+                progress=progress,
                 opener=opener,
                 allow_unpinned=True,
             )
         except Exception as exc:  # try the next mirror
             last_error = exc
-            echo(f"  не вышло: {exc}")
+            attempts.append(f"  {url}\n    {exc}")
+            echo(f"  не вышло: {url}")
+            echo(f"    {exc}")
             continue
         staging = root / ".launcher" / "ffmpeg-extract"
         if staging.exists():
@@ -993,9 +1007,15 @@ def ensure_ffmpeg(settings: Settings, *, echo=print, opener=urllib.request.urlop
         archive.unlink(missing_ok=True)
         echo(f"FFmpeg установлен: {target}")
         return target
+    archive = downloads_dir(root) / "ffmpeg.zip"
+    detail = "\n".join(attempts) if attempts else (str(last_error) if last_error else "неизвестно")
     raise DownloadError(
-        "Не удалось получить FFmpeg 8.1.1. Последняя причина: "
-        + (str(last_error) if last_error else "неизвестно")
+        "Не удалось получить FFmpeg. Пробовал все зеркала:\n"
+        f"{detail}\n\n"
+        "Если ни одно не открывается (бывает у некоторых провайдеров), "
+        "скачайте архив essentials с сайта gyan.dev вручную и положите его сюда:\n"
+        f"  {archive}\n"
+        "Лаунчер проверит его и продолжит."
     )
 
 
@@ -1077,7 +1097,7 @@ def step_prepare(settings: Settings, runner: Runner, *, echo=print) -> Path:
     return tree
 
 
-def step_godot(settings: Settings, *, echo=print, opener=urllib.request.urlopen) -> Path:
+def step_godot(settings: Settings, *, echo=print, opener=urllib.request.urlopen, progress=None) -> Path:
     root = _install_root(settings)
     target = godot_exe(root)
     if target.is_file():
@@ -1091,6 +1111,7 @@ def step_godot(settings: Settings, *, echo=print, opener=urllib.request.urlopen)
             expected_size=GODOT_WIN64_ZIP.size,
             label=f"Godot {GODOT_WIN64_ZIP.version}",
             echo=echo,
+            progress=progress,
             opener=opener,
         )
     staging = root / ".launcher" / "godot-extract"
@@ -1168,7 +1189,7 @@ def powershell() -> str:
 def step_bootstrap_venv(settings: Settings, runner: Runner, *, echo=print) -> Path:
     root = _install_root(settings)
     tree = _tree(settings)
-    python = ensure_python(settings, runner, echo=echo)
+    python = ensure_python(settings, runner, echo=echo, progress=getattr(runner, "progress", None))
     script = tree / "tools" / "bootstrap-importer-python.ps1"
     if not script.is_file():
         raise LauncherError(f"В дереве нет {script}.", EXIT_STATE)
@@ -1177,6 +1198,11 @@ def step_bootstrap_venv(settings: Settings, runner: Runner, *, echo=print) -> Pa
         # The script prefers OPENBFME_PYTHON when set, which is exactly the
         # pinned interpreter this launcher just verified.
         "OPENBFME_PYTHON": str(python),
+        # The step spends its time waiting on pip.  Download the wheels in
+        # parallel and keep every line output: pip hides its progress bar when
+        # it thinks it is talking to a pipe, and the step then looks dead.
+        "PIP_PROGRESS_BAR": "on",
+        "PIP_NO_INPUT": "1",
     }
     arguments = [
         powershell(),
@@ -1227,7 +1253,7 @@ def step_bootstrap_tools(settings: Settings, runner: Runner, *, echo=print) -> N
         echo(f"git: {git}")
     else:
         echo("git не найден — Blender-плагин не будет скачан, остальное не зависит от него.")
-    ffmpeg = ensure_ffmpeg(settings, echo=echo)
+    ffmpeg = ensure_ffmpeg(settings, echo=echo, progress=getattr(runner, "progress", None))
     runner.run(
         [
             str(python),
@@ -1643,7 +1669,7 @@ def autopilot(settings: Settings, runner: Runner, *, echo=print) -> int:
         echo("")
         echo(f"=== Шаг {index}/{len(plan)}: {FIRST_RUN_TITLES.get(step, step)} ===")
         if step == "python":
-            ensure_python(settings, runner, echo=echo)
+            ensure_python(settings, runner, echo=echo, progress=getattr(runner, "progress", None))
         elif step == "prepare":
             step_prepare(settings, runner, echo=echo)
         elif step == "venv":
@@ -1651,7 +1677,7 @@ def autopilot(settings: Settings, runner: Runner, *, echo=print) -> int:
         elif step == "tools":
             step_bootstrap_tools(settings, runner, echo=echo)
         elif step == "godot":
-            step_godot(settings, echo=echo)
+            step_godot(settings, echo=echo, progress=getattr(runner, "progress", None))
         elif step == "import":
             step_import(settings, runner, echo=echo)
         elif step == "layered":
