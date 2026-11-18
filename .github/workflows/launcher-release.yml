@@ -1,0 +1,71 @@
+# Builds the one file a player double-clicks: AdvancedRandomizer.exe
+#
+# The compiler is csc.exe that ships inside Windows itself, so there is no SDK
+# to install and the result needs no .NET download either: it runs on the .NET
+# Framework every Windows 10 already has.  The exe is a bootstrapper only - the
+# window and all decisions stay in launcher\start, which is versioned and
+# testable; this job just wraps it so a double-click cannot flash a console.
+name: Launcher exe
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "launcher/build/**"
+      - ".github/workflows/launcher-release.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile AdvancedRandomizer.exe
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          if (-not (Test-Path $csc)) {
+            $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe'
+          }
+          if (-not (Test-Path $csc)) { throw 'csc.exe not found in this Windows image' }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          & $csc /nologo /target:winexe /platform:anycpu /optimize+ `
+                 /out:dist/AdvancedRandomizer.exe `
+                 /r:System.dll /r:System.Windows.Forms.dll `
+                 launcher/build/Program.cs
+          if ($LASTEXITCODE -ne 0) { throw "csc failed with $LASTEXITCODE" }
+          Get-Item dist/AdvancedRandomizer.exe | Format-List Name, Length
+
+      - name: Assemble the player's download
+        shell: pwsh
+        run: |
+          # One archive: the exe, the launcher scripts it drives, and the docs.
+          $stage = 'dist/AdvancedRandomizer'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item dist/AdvancedRandomizer.exe $stage
+          Copy-Item launcher -Destination $stage -Recurse
+          Copy-Item README.md $stage
+          Compress-Archive -Path "$stage/*" -DestinationPath dist/AdvancedRandomizer-windows.zip -Force
+          Get-Item dist/AdvancedRandomizer-windows.zip | Format-List Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AdvancedRandomizer-windows
+          path: |
+            dist/AdvancedRandomizer.exe
+            dist/AdvancedRandomizer-windows.zip
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view $env:GITHUB_REF_NAME 2>$null
+          if ($LASTEXITCODE -ne 0) { gh release create $env:GITHUB_REF_NAME --generate-notes }
+          gh release upload $env:GITHUB_REF_NAME dist/AdvancedRandomizer.exe dist/AdvancedRandomizer-windows.zip --clobber
