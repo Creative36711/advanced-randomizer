@@ -1368,3 +1368,58 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 3)
         self.assertIn("! bad", seen)
         self.assertEqual(result.stderr.strip(), "bad")
+
+class ArgumentOrderTests(unittest.TestCase):
+    """The build that made PLAY do nothing: `--progress` landed before the
+    script path, so Python itself rejected it ("unknown option") and the
+    launcher reported success anyway."""
+
+    def window(self) -> str:
+        return (Path(__file__).resolve().parent.parent / "launcher.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+
+    def test_progress_goes_after_the_script_path(self) -> None:
+        window = self.window()
+        self.assertIn('@($engine, "--progress", $script:progressFile)', window)
+        self.assertNotIn('@("--progress", $script:progressFile, $engine)', window)
+
+    def test_python_accepts_the_launcher_argument_order(self) -> None:
+        # The real interpreter, the real order: anything before the script is
+        # Python's own option and is rejected as "unknown option".
+        import subprocess as sp
+        import sys as _sys
+
+        scratch = Path(tempfile.mkdtemp())
+        events = scratch / "progress.jsonl"
+        result = sp.run(
+            [
+                _sys.executable,
+                str(Path(__file__).resolve().parent.parent / "engine.py"),
+                "--progress", str(events),
+                "set", "--install-root", str(scratch / "root"),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("unknown option", result.stderr)
+        self.assertTrue(events.exists())
+
+    def test_a_run_that_never_reached_the_engine_is_not_a_success(self) -> None:
+        window = self.window()
+        self.assertIn("engineStarted", window)
+        self.assertIn("Движок не запустился", window)
+
+    def test_the_invocation_is_logged_before_it_is_attempted(self) -> None:
+        # A line written only after Start-Process returns cannot report a
+        # process that never started.
+        window = self.window()
+        logged = window.index('[void](Write-Log ("> " + $python')
+        started = window.index("$process = Start-Process @startArgs")
+        self.assertLess(logged, started)
+
+    def test_success_is_not_claimed_without_a_confirmed_launch(self) -> None:
+        window = self.window()
+        self.assertIn("$script:lastEngineLine", window)
+        self.assertIn("Игра запущена", window)

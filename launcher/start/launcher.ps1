@@ -41,6 +41,7 @@ $script:progressFile = $null
 $script:progressStream = $null
 $script:progressReader = $null
 $script:progressBuffer = ""
+$script:lastEngineLine = ""
 
 try {
     Remove-Item -LiteralPath $script:crashLog -Force -ErrorAction SilentlyContinue
@@ -408,7 +409,10 @@ function Read-NewLogLines {
     param($Reader)
     if ($null -eq $Reader) { return }
     while ($null -ne ($line = $Reader.ReadLine())) {
-        if ($line.Trim().Length -gt 0) { [void](Write-Log $line) }
+        if ($line.Trim().Length -gt 0) {
+            $script:lastEngineLine = $line
+            [void](Write-Log $line)
+        }
     }
 }
 
@@ -586,7 +590,14 @@ function Invoke-Engine {
         $script:progressStream = $null
         $script:progressReader = $null
         $script:progressBuffer = ""
-        $argumentLine = Join-Arguments (@("--progress", $script:progressFile, $engine) + $Arguments)
+        $script:lastEngineLine = ""
+        # Everything after the script path goes to the script; before it, to
+        # Python.  `--progress` before `engine.py` made Python print
+        # "unknown option --progress" and exit, and the launcher called that a
+        # success - the game simply never started.
+        $argumentLine = Join-Arguments (@($engine, "--progress", $script:progressFile) + $Arguments)
+        # Logged BEFORE the attempt, not after: a line that only appears once
+        # the process is running cannot show a run that never started.
         [void](Write-Log ("> " + $python + " " + $argumentLine))
         Show-Progress -Caption (Get-StepCaption $Arguments) -Percent (-1)
 
@@ -624,13 +635,28 @@ function Invoke-Engine {
         $process.WaitForExit()
         Read-NewLogLines -Reader $reader
 
+        $hadError = $false
         if (Test-Path -LiteralPath $errFile -PathType Leaf) {
             $errors = Get-Content -LiteralPath $errFile -Encoding UTF8 -ErrorAction SilentlyContinue
             foreach ($line in $errors) {
-                if ($line -and $line.Trim().Length -gt 0) { Write-Log "! $line" }
+                if ($line -and $line.Trim().Length -gt 0) {
+                    [void](Write-Log ("! " + $line))
+                    $hadError = $true
+                }
             }
         }
-        return [int]$process.ExitCode
+        $code = [int]$process.ExitCode
+        # Every real step reports either what it did or what went wrong.  A run
+        # that printed NOTHING and exited on its own is not a success: it never
+        # reached the engine.  This is what turned "unknown option --progress"
+        # into "Готово. Запускаю игру." with no game.
+        $engineStarted = (-not $process.HasExited) -or $hadError -or ($code -ne 0) -or (Test-Path -LiteralPath $script:progressFile -PathType Leaf)
+        if (-not $engineStarted) {
+            [void](Write-Log ("Движок не запустился: интерпретатор " + $python + " завершился, не выполнив engine.py."))
+            [void](Write-Log "Проверьте, что путь к Python рабочий; лаунчер попробует другой при следующем запуске.")
+            return 1
+        }
+        return $code
     } catch {
         [void](Write-Log ("Ошибка: " + $_.Exception.Message))
         Write-CrashLog ("Ошибка движка: " + $_.Exception.Message)
@@ -837,7 +863,13 @@ $play.Add_Click({
     if ($code -ne 0) {
         Show-EngineFailure -Code $code
     } else {
-        Write-Log "Готово. Запускаю игру."
+        # Never promise a launch that the log does not confirm: "Готово.
+        # Запускаю игру." appeared even when the engine had not run at all.
+        if ($script:lastEngineLine -match "Игра запущена") {
+            Write-Log "Готово. Игра запущена."
+        } else {
+            Write-Log "Подготовка завершена, но запуск не подтверждён — смотрите последние строки лога."
+        }
     }
     Refresh-Status
 })
