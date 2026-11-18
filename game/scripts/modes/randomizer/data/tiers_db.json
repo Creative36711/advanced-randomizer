@@ -29,7 +29,14 @@
     "haste_percent": 200,
     "meteor_count": 6,
     "meteor_radius": 7,
-    "meteor_damage": 180
+    "meteor_damage": 180,
+    "events": [
+      {"id":"wings", "name":"Призыв Крылатых Тварей", "description":"Летающий союзник третьего тира прибудет к каждой крепости.", "weight":1},
+      {"id":"collapse", "name":"Экономический коллапс", "description":"Найм дешевле, но армии передвигаются медленнее.", "weight":1},
+      {"id":"betrayal", "name":"Предательство", "description":"По одному отряду сменит сторону. Герои остаются верны.", "weight":1},
+      {"id":"meteors", "name":"Метеоритный дождь", "description":"Обстрел случайных участков карты заденет и войска, и здания.", "weight":1},
+      {"id":"haste", "name":"Ускорение времени", "description":"Строители и производящие здания работают быстрее.", "weight":1}
+    ]
   },
   "entries": [
     {"id": "GondorFighterHorde", "faction": "men", "kind": "unit", "tier": 1, "tags": ["men", "infantry"], "weight": 1},

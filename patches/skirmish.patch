@@ -50,6 +50,26 @@
  		return
  	# The manifest plan runs EVERY window — it is the proven baseline the
  	# whole battery is pinned to, and it must never get weaker.
+--- a/game/src/retail_slice/retail_sim_construction.gd
++++ b/game/src/retail_slice/retail_sim_construction.gd
+@@ -525,7 +525,7 @@
+ 			continue
+ 		if bool(site.get("builder_free", false)):
+ 			# Foundation behavior: plot-built expansions rise without a porter.
+-			var elapsed := int(site.get("construction_elapsed_ticks", 0)) + 1
++			var elapsed: int = int(site.get("construction_elapsed_ticks", 0)) + (_sim.randomizer.chaos.work_ticks(_sim.randomizer) if _sim.randomizer != null else 1)
+ 			var build_ticks := maxi(1, int(site.get("construction_build_ticks", 1)))
+ 			site["construction_elapsed_ticks"] = elapsed
+ 			site["construction_progress"] = minf(1.0, float(elapsed) / float(build_ticks))
+@@ -557,7 +557,7 @@
+ 		# from (and then hijack completion of) the active build.
+ 		if int(builder.get("construction_id", 0)) != structure_id:
+ 			continue
+-		var elapsed := int(site.get("construction_elapsed_ticks", 0)) + 1
++		var elapsed: int = int(site.get("construction_elapsed_ticks", 0)) + (_sim.randomizer.chaos.work_ticks(_sim.randomizer) if _sim.randomizer != null else 1)
+ 		var build_ticks := maxi(1, int(site.get("construction_build_ticks", 1)))
+ 		site["construction_elapsed_ticks"] = elapsed
+ 		site["construction_progress"] = minf(1.0, float(elapsed) / float(build_ticks))
 --- a/game/src/retail_slice/retail_sim_persistence.gd
 +++ b/game/src/retail_slice/retail_sim_persistence.gd
 @@ -53,7 +53,19 @@
@@ -112,6 +132,16 @@
  	var production_contract := building.get("production_update", {}) as Dictionary
  	for modifier_value in production_contract.get("modifiers", []) as Array:
  		var modifier := modifier_value as Dictionary
+@@ -410,7 +411,8 @@
+ 	if production_rule.is_empty():
+ 		return 0
+ 	var gameplay_rule := String(production_rule.get(rule_key, ""))
+-	return int(_sim._rules.get(gameplay_rule, int(production_rule.get(default_key, 0))))
++	var base := int(_sim._rules.get(gameplay_rule, int(production_rule.get(default_key, 0))))
++	return _sim.randomizer.chaos.cost(_sim.randomizer, base) if _sim.randomizer != null and rule_key == "cost_rule" else base
+ 
+ 
+ func producer_id(team: int, kind: String = "barracks") -> int:
 --- a/game/src/retail_slice/retail_sim_upgrades.gd
 +++ b/game/src/retail_slice/retail_sim_upgrades.gd
 @@ -321,6 +321,8 @@
@@ -193,7 +223,7 @@
  	if base_loop_enabled:
  		_step_economy()
  		_step_structure_upgrades()
-@@ -5630,7 +5651,8 @@
+@@ -5630,13 +5651,15 @@
  	return _ability_runtime_subsystem()._timed_modifier_active(row, kind)
  
  func _ability_outgoing_multiplier(row: Dictionary) -> float:
@@ -203,7 +233,15 @@
  
  func _ability_incoming_multiplier(row: Dictionary) -> float:
  	return _ability_runtime_subsystem()._ability_incoming_multiplier(row)
-@@ -6413,6 +6435,8 @@
+ 
+ func _ability_speed_multiplier(row: Dictionary) -> float:
+-	return _ability_runtime_subsystem()._ability_speed_multiplier(row)
++	var base: float = _ability_runtime_subsystem()._ability_speed_multiplier(row)
++	return base * randomizer.chaos.speed(randomizer) if randomizer != null else base
+ 
+ func _ability_vision_multiplier(row: Dictionary) -> float:
+ 	return _ability_runtime_subsystem()._ability_vision_multiplier(row)
+@@ -6413,6 +6436,8 @@
  		if not event.has(key):
  			event[key] = data[key]
  	events.append(event)
@@ -212,7 +250,7 @@
  	for byte in JSON.stringify(event).to_utf8_buffer():
  		_event_digest = ((_event_digest ^ int(byte)) * 16777619) & 0xFFFFFFFF
  	_next_event_sequence += 1
-@@ -6751,6 +6775,10 @@
+@@ -6751,6 +6776,10 @@
  			last_command_result = issue_construct(_command_ids(args.get("ids", [])), String(args.get("structure_kind", "")), Vector2(args.get("position", Vector2.ZERO)), bool(args.get("dry_run", false)), team)
  		"issue_expansion_construct":
  			last_command_result = issue_expansion_construct(team, int(args.get("fortress_id", 0)), String(args.get("expansion_kind", "")), int(args.get("pad_index", -1)))
@@ -294,3 +332,13 @@
  			if train_button == null:
  				continue
  			# Iconless doc-honest commands (unconverted art) keep their socket
+@@ -8715,6 +8733,9 @@
+ 	while _power_fx_event_index < events.size():
+ 		var event: Dictionary = events[_power_fx_event_index]
+ 		_power_fx_event_index += 1
++		if event.kind in ["randomizer.meteor.incoming", "randomizer.meteor.impact"]:
++			preload("res://scripts/modes/randomizer/ui/meteor_fx.gd").present(self, event)
++			continue
+ 		if String(event.get("kind", "")) != "power.cast":
+ 			continue
+ 		var point_value: Variant = event.get("point")

@@ -3,6 +3,7 @@ const Config := preload("randomizer_config.gd")
 const RNG := preload("seeded_rng.gd")
 const Registry := preload("tier_registry.gd")
 const Commands := preload("command_set_shuffler.gd")
+const Chaos := preload("chaos_event_system.gd")
 const Draft := preload("draft_manager.gd")
 const Spells := preload("spellbook_shuffler.gd")
 
@@ -13,6 +14,7 @@ var config: Dictionary
 var db := Registry.new()
 var rng: RNG
 var commands := Commands.new()
+var chaos := Chaos.new()
 var draft := Draft.new()
 var spells := Spells.new()
 var state := {}
@@ -39,12 +41,15 @@ func collect() -> void:
 func start() -> void:
 	state.clock = 0
 	draft.setup(self)
+	chaos.setup(self)
 	collect()
 	commands.setup(self)
 	spells.shuffle(self)
 
 func tick() -> void:
 	state.clock += 1
+	if config.chaos:
+		chaos.tick(self)
 	if config.draft:
 		draft.tick(self)
 	for id in sim.structure_ids():

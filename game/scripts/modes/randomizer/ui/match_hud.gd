@@ -9,12 +9,14 @@ func _ready() -> void:
 	position = Vector2(18, 80)
 	add_child(reroll)
 	build_draft()
+	build_banner()
 	reroll.pressed.connect(func(): command.emit("ar_reroll", {"producer": producer}))
 
 func refresh(m, team: int, selected: int) -> void:
 	producer = selected
 	refresh_draft(m, team)
 	refresh_book(m, team)
+	refresh_banner(m)
 	var b: Dictionary = m.sim.structures.get(selected, {})
 	reroll.visible = b.get("team") == team and b.has("ar_original") and b.health > 0 and b.construction_progress >= 1.0
 	if reroll.visible:
@@ -71,3 +73,31 @@ func refresh_book(m, team: int) -> void:
 		var hud = get_parent()
 		hud._spellbook_power_rows = m.spells.hud_rows(tree)
 		hud._configure_orb_rows()
+
+var banner := Label.new()
+var horn := AudioStreamPlayer.new()
+var warned := -1
+
+func build_banner() -> void:
+	add_child(banner)
+	banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	banner.add_theme_color_override("font_color", Color.WHEAT)
+	horn.stream = preload("../audio/horn-1.ogg")
+	horn.volume_db = -9
+	add_child(horn)
+
+func refresh_banner(m) -> void:
+	var c: Dictionary = m.state.chaos
+	var warning: bool = c.announced != ""
+	var id: String = c.announced if warning else c.active
+	banner.visible = id != ""
+	if not banner.visible:
+		return
+	for e in m.db.balance.events:
+		if e.id == id:
+			var seconds := ceili(float((c.next if warning else c.until) - m.state.clock) * m.sim.TICK_SECONDS)
+			banner.text = "%s · %ds\n%s" % [e.name, seconds, e.description]
+			break
+	if warning and warned != c.next:
+		warned = c.next
+		horn.play()
