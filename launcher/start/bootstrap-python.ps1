@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Install the pinned Python the launcher and the importer both need.
 
