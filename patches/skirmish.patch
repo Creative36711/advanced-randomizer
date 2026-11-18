@@ -1,0 +1,261 @@
+--- a/game/src/core/game_state.gd
++++ b/game/src/core/game_state.gd
+@@ -35,6 +35,7 @@
+ var retail_enemy_faction: String = "men"
+ ## RULES tab values for the retail slice. -1 keeps the slice's authored
+ ## starting resources; the factor multiplies its authored command point cap.
++var retail_randomizer: Dictionary = {}
+ var retail_initial_resources: int = -1
+ var retail_command_point_factor: float = 1.0
+ ## RULES tab building mode. false = today's BFME2 freeform porter placement
+@@ -151,6 +152,7 @@
+ 	retail_mp_port = 26015
+ 	retail_player_faction = "men"
+ 	retail_enemy_faction = "men"
++	retail_randomizer = {}
+ 	retail_initial_resources = -1
+ 	retail_command_point_factor = 1.0
+ 	retail_build_plots_only = false
+--- a/game/src/retail_slice/retail_command.gd
++++ b/game/src/retail_slice/retail_command.gd
+@@ -14,6 +14,7 @@
+ 	"issue_exit_garrison",
+ 	"issue_construct",
+ 	"issue_expansion_construct",
++	"ar_reroll",
+ 	"queue_unit",
+ 	"queue_structure_upgrade",
+ 	"queue_battalion_upgrade",
+@@ -50,6 +51,8 @@
+ 		return false
+ 	if typeof(cmd.get("args")) != TYPE_DICTIONARY:
+ 		return false
++	if cmd.type == "ar_reroll":
++		return cmd.args.size() == 1 and cmd.args.get("producer") is int and cmd.args.producer > 0
+ 	return _is_primitive_dictionary(cmd["args"] as Dictionary)
+ 
+ 
+--- a/game/src/retail_slice/retail_sim_ai.gd
++++ b/game/src/retail_slice/retail_sim_ai.gd
+@@ -105,6 +105,9 @@
+ 	var _sim = sim
+ 	var queue_interval := maxi(15, int(_sim._rules.get("ai_queue_interval_ticks", 60)) * int(profile.get("queue_interval_permille", 1000)) / 1000)
+ 	if not (_sim.base_loop_enabled and _sim.tick_index % queue_interval == 0):
++		return
++	if _sim.randomizer != null and (_sim.randomizer.config.shuffle_units or _sim.randomizer.config.shuffle_heroes):
++		_sim.randomizer.commands.train_ai(_sim.randomizer, team)
+ 		return
+ 	# The manifest plan runs EVERY window — it is the proven baseline the
+ 	# whole battery is pinned to, and it must never get weaker.
+--- a/game/src/retail_slice/retail_sim_persistence.gd
++++ b/game/src/retail_slice/retail_sim_persistence.gd
+@@ -53,7 +53,19 @@
+ 	for required_key in ["tick_index", "entities", "structures", "team_resources", "pending_commands", "next_dynamic_id"]:
+ 		if not state.has(required_key):
+ 			return false
++	var options = state.get("rules", {}).get("randomizer", {})
++	var mode = null
++	if not options.is_empty():
++		if not _sim.RandomizerMode.Config.valid(options):
++			return false
++		if options.enabled:
++			mode = _sim.RandomizerMode.new(_sim, options)
++			if mode.db.digest != state.get("randomizer", {}).get("balance"):
++				return false
++	_sim.randomizer = mode
+ 	restore_authoritative_state(state)
++	if mode != null:
++		mode.restore(state.randomizer)
+ 	_sim.selected_ids.clear()
+ 	_sim.reset_control_groups()
+ 	_sim.events.clear()
+@@ -334,6 +346,8 @@
+ 	# through its canonical view (zero counters/false flags pruned, every
+ 	# level sorted), so an untouched match contributes zero bytes and state
+ 	# returned to pristine values returns to the pristine hash exactly.
++	if _sim.randomizer != null:
++		state["randomizer"] = _sim.randomizer.snapshot()
+ 	var script_env_view = _sim._script_env_state_view()
+ 	if not script_env_view.is_empty():
+ 		state["script_env_state"] = script_env_view
+--- a/game/src/retail_slice/retail_sim_production.gd
++++ b/game/src/retail_slice/retail_sim_production.gd
+@@ -32,8 +32,9 @@
+ 		return {"ok": false, "reason": "created-hero-not-owned"}
+ 	if String(production_rule.get("category", "")) == "hero" and _sim.hero_unavailable(team, unit_type):
+ 		return {"ok": false, "reason": "hero-unavailable"}
++	var source: String = building.get("ar_sources", {}).get(unit_type, unit_type)
+ 	var missing_production_upgrade := production_gate_unsatisfied(
+-		unit_type,
++		source,
+ 		String(building.get("structure_kind", "")),
+ 		Array(building.get("completed_upgrades", [])),
+ 		(_sim.team_upgrades.get(team, {}) as Dictionary).keys(),
+@@ -49,7 +50,7 @@
+ 	var maximum_queue := producer_queue_limit(building)
+ 	if maximum_queue > 0 and queue.size() >= maximum_queue:
+ 		return {"ok": false, "reason": "queue-full"}
+-	var cost := maxi(0, _production_rule_value(unit_type, "cost_rule", "default_cost"))
++	var cost := maxi(0, _production_rule_value(source, "cost_rule", "default_cost"))
+ 	# Zero command points is honored when the document says zero (retail
+ 	# porters are free); the historical clamp to one is gone.
+ 	var command_cost := maxi(0, _production_rule_value(unit_type, "command_points_rule", "default_command_points"))
+@@ -59,7 +60,7 @@
+ 		> _sim.command_point_total_for_team(team)
+ 	):
+ 		return {"ok": false, "reason": "command-point-cap"}
+-	var build_ticks := maxi(1, _production_rule_value(unit_type, "build_ticks_rule", "default_build_ticks"))
++	var build_ticks := maxi(1, _production_rule_value(source, "build_ticks_rule", "default_build_ticks"))
+ 	var production_contract := building.get("production_update", {}) as Dictionary
+ 	for modifier_value in production_contract.get("modifiers", []) as Array:
+ 		var modifier := modifier_value as Dictionary
+--- a/game/src/retail_slice/retail_slice_sim.gd
++++ b/game/src/retail_slice/retail_slice_sim.gd
+@@ -792,7 +792,7 @@
+ 		var provided_faction := String((provided_value as Dictionary).get("faction", ""))
+ 		if provided_faction != "":
+ 			distinct_factions[provided_faction] = true
+-	var cross_faction_match := distinct_factions.size() > 1
++	var cross_faction_match: bool = distinct_factions.size() > 1 or _rules.get("randomizer", {}).get("enabled", false) == true
+ 	_team_manifests = {}
+ 	_team_production_scopes = {}
+ 	_team_unit_production_rules = {}
+@@ -1508,6 +1508,9 @@
+ const RING_DEFAULT_ITEM := "TheDroppedRing"
+ 
+ 
++const RandomizerMode := preload("res://scripts/modes/randomizer/randomizer_match.gd")
++var randomizer: RandomizerMode
++
+ func setup(map_configuration: Dictionary = {}, gameplay_rules: Dictionary = {}) -> void:
+ 	_ensure_parity()
+ 	parity.clear()
+@@ -1585,6 +1588,16 @@
+ 	script_areas.clear()
+ 	script_waypoints.clear()
+ 	var effective_rules := gameplay_rules if not gameplay_rules.is_empty() else _rules
++	randomizer = null
++	var options = effective_rules.get("randomizer", {})
++	if not options is Dictionary or (not options.is_empty() and not RandomizerMode.Config.valid(options)):
++		configuration_error = "Invalid Advanced Randomizer config"
++		return
++	if options.get("enabled", false):
++		randomizer = RandomizerMode.new(self, options)
++		if not randomizer.db.error.is_empty():
++			configuration_error = randomizer.db.error
++			return
+ 	var ring_waypoint_family := String(
+ 		(effective_rules.get("ring_system", {}) as Dictionary).get(
+ 			"waypointFamily", "SpawnPoint_SkirmishGollum_"
+@@ -1718,6 +1731,8 @@
+ 	# rows and match-scoped spellbook state.
+ 	if _spellbook_ready and not _spellbook_document.is_empty():
+ 		configure_spellbook_runtime(_spellbook_document)
++	if randomizer != null:
++		randomizer.start()
+ 	_emit_music("explore")
+ 
+ 
+@@ -3606,9 +3621,13 @@
+ 	return ScriptWorldSystemScript._logic_random_draw32(words)
+ 
+ func logic_random_int(low: int, high: int) -> int:
++	if randomizer != null:
++		return randomizer.rng.randi_range(low, high)
+ 	return _script_world_subsystem().logic_random_int(low, high)
+ 
+ func logic_random_real(low: float, high: float) -> float:
++	if randomizer != null:
++		return randomizer.rng.randf_range(low, high)
+ 	return _script_world_subsystem().logic_random_real(low, high)
+ 
+ func attach_script_env(env: SageScriptEnv, team: int) -> bool:
+@@ -3939,6 +3958,8 @@
+ 	# Placed AFTER the legacy pass and touching none of its state, so a fog-off
+ 	# match is byte-identical below this line and the 3000-tick pin cannot move.
+ 	_step_shroud_grid()
++	if randomizer != null:
++		randomizer.tick()
+ 	if base_loop_enabled:
+ 		_step_economy()
+ 		_step_structure_upgrades()
+@@ -6751,6 +6772,8 @@
+ 			last_command_result = issue_construct(_command_ids(args.get("ids", [])), String(args.get("structure_kind", "")), Vector2(args.get("position", Vector2.ZERO)), bool(args.get("dry_run", false)), team)
+ 		"issue_expansion_construct":
+ 			last_command_result = issue_expansion_construct(team, int(args.get("fortress_id", 0)), String(args.get("expansion_kind", "")), int(args.get("pad_index", -1)))
++		"ar_reroll":
++			last_command_result = randomizer.commands.reroll(randomizer, team, args.producer) if randomizer != null else {"ok": false, "reason": "mode-disabled"}
+ 		"queue_unit":
+ 			last_command_result = queue_unit(team, int(args.get("producer", 0)), String(args.get("unit_type", SOLDIER_HORDE_ID)))
+ 		"queue_structure_upgrade":
+--- a/game/src/retail_slice/retail_vertical_slice.gd
++++ b/game/src/retail_slice/retail_vertical_slice.gd
+@@ -1170,7 +1170,7 @@
+ 	var local_faction := _local_presentation_faction(player_faction)
+ 	var visited := {local_faction: true}
+ 	var restore_needed := false
+-	for team_manifest_value in _team_faction_manifests.values():
++	for team_manifest_value in RandomizerContent.manifests(self, local_faction):
+ 		var team_manifest := team_manifest_value as Dictionary
+ 		var team_faction := String(team_manifest.get("faction", "")).strip_edges().to_lower()
+ 		if team_manifest.has("_error"):
+@@ -1601,7 +1601,7 @@
+ 	var extra_playable_runtimes: Dictionary = {}
+ 	var extra_producer_kinds: Dictionary = {}
+ 	var visited_factions := {faction: true}
+-	for team_manifest_value in _team_faction_manifests.values():
++	for team_manifest_value in RandomizerContent.manifests(self, faction):
+ 		var team_manifest := team_manifest_value as Dictionary
+ 		var team_faction := String(team_manifest.get("faction", "")).strip_edges().to_lower()
+ 		if team_faction == "" or visited_factions.has(team_faction) or team_manifest.has("_error"):
+@@ -1685,6 +1685,7 @@
+ 			var ring_system_value: Variant = ContentDB.get("ring_system_runtime")
+ 			if typeof(ring_system_value) == TYPE_DICTIONARY and not (ring_system_value as Dictionary).is_empty():
+ 				rules["ring_system"] = (ring_system_value as Dictionary).duplicate(true)
++	RandomizerContent.add_rules(self, rules)
+ 	rules["source_map_transform_scale"] = source_map_data.local_transform_scale
+ 	# A selected neutral pack promotes exact map Object identities through the
+ 	# edition-scoped scenario registries.
+@@ -4689,17 +4690,31 @@
+ 		if simulation.hero_unavailable(local_team, unit_type):
+ 			locked.append(unit_type)
+ 			continue
++		var source: String = simulation.structures.get(selected_structure_id, {}).get("ar_sources", {}).get(unit_type, unit_type)
+ 		if simulation.production_gate_unsatisfied(
+-			unit_type, structure_kind, completed_upgrades,
++			source, structure_kind, completed_upgrades,
+ 			team_upgrade_ids
+ 		) != "":
+ 			locked.append(unit_type)
+ 	return locked
+ 
+ 
++const RandomizerContent := preload("res://scripts/modes/randomizer/randomizer_content.gd")
++var randomizer_rosters := []
++var randomizer_hud
++
+ func _refresh_hud() -> void:
+ 	if hud == null or simulation == null:
+ 		return
++	if simulation.randomizer != null:
++		if not is_instance_valid(randomizer_hud):
++			randomizer_hud = preload("res://scripts/modes/randomizer/ui/match_hud.gd").new()
++			hud.add_child(randomizer_hud)
++			randomizer_hud.command.connect(_apply_local_command)
++		randomizer_hud.refresh(simulation.randomizer, local_team, selected_structure_id)
++	elif is_instance_valid(randomizer_hud):
++		randomizer_hud.queue_free()
++		randomizer_hud = null
+ 	hud.set_resources(simulation.resources_for_team(local_team), simulation.command_points_for_team(local_team), simulation.command_point_total_for_team(local_team))
+ 	# Cooldown sweeps/purchase states move every tick, and the star orb's
+ 	# power-point count is always on screen: keep the spellbook surface live.
+@@ -5017,6 +5032,9 @@
+ 			var train_button: Button = hud.train_buttons.get(unit_id) as Button
+ 			if train_button == null:
+ 				train_button = hud.hero_buttons.get(unit_id) as Button
++			if structure.get("ar_sources", {}).has(unit_id):
++				entries.append(simulation.randomizer.commands.radial_entry(simulation.randomizer, structure, unit_id, locked_units, train_button, radial_queue_by_unit.get(unit_id, {})))
++				continue
+ 			if train_button == null:
+ 				continue
+ 			# Iconless doc-honest commands (unconverted art) keep their socket
