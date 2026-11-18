@@ -1522,3 +1522,49 @@ class FasterStartTests(unittest.TestCase):
         import pinned
 
         self.assertGreaterEqual(len(pinned.FFMPEG_URL_CANDIDATES), 2)
+
+class ExitCodeTests(unittest.TestCase):
+    """Two opposite lies: "success" after a failure, and "Не удалось
+    сохранить настройки" after a successful save. Both came from the same
+    place - an exit code that PowerShell left unset."""
+
+    def window(self) -> str:
+        return (Path(__file__).resolve().parent.parent / "launcher.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+
+    def test_an_unknown_code_falls_back_to_what_the_engine_said(self) -> None:
+        window = self.window()
+        self.assertIn("$exitKnown", window)
+        # Unknown + an error on stderr is a failure...
+        self.assertIn("if ($hadError)", window)
+        # ...but unknown + a report on stdout is a success, not a failure.
+        self.assertIn("$script:lastEngineLine", window)
+        self.assertNotIn(
+            "if ($null -ne $process.ExitCode) { $code = [int]$process.ExitCode }",
+            window,
+        )
+
+    def test_the_busy_flag_is_set_inside_the_try(self) -> None:
+        # Set before the try, a throw in the setup left it stuck at $true and
+        # every later click returned 1 without a word.
+        window = self.window()
+        busy = window.index("$script:busy = $true")
+        handler = window.index("function Invoke-Engine")
+        try_keyword = window.index("    try {", handler)
+        finally_keyword = window.index("    } finally {", handler)
+        self.assertGreater(busy, try_keyword, "set it inside try")
+        self.assertLess(busy, finally_keyword)
+        self.assertIn("$script:busy = $false", window)
+
+    def test_save_fields_returns_exactly_one_number(self) -> None:
+        window = self.window()
+        self.assertNotIn("return (Get-ExitCode (Invoke-Engine", window)
+        self.assertIn("return [int]$code", window)
+
+    def test_invoke_engine_returns_a_typed_number(self) -> None:
+        window = self.window()
+        self.assertIn("return [int]$code", window)
+        # A leaked object turns the code into an array; the guard against that
+        # must stay.
+        self.assertIn("$Value -is [array]", window)

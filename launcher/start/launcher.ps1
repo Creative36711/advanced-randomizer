@@ -578,16 +578,20 @@ function Invoke-Engine {
         [void](Write-Log "Ещё идёт предыдущий шаг — дождитесь его окончания.")
         return 1
     }
-    $script:busy = $true
-    $play.Enabled = $false
-    $setup.Enabled = $false
-    Show-Progress -Caption (Get-StepCaption $Arguments) -Percent (-1)
     $logFile = Join-Path ([IO.Path]::GetTempPath()) ("advanced-randomizer-" + [Guid]::NewGuid().ToString("N") + ".log")
     $errFile = "$logFile.err"
     $stream = $null
     $reader = $null
 
     try {
+        # Inside the try, so the finally block that clears it always runs.  Set
+        # before the try, a throw in the setup left this stuck at $true and
+        # every following click returned 1 from the guard - a save that
+        # "failed" without a single line of explanation.
+        $script:busy = $true
+        $play.Enabled = $false
+        $setup.Enabled = $false
+        Show-Progress -Caption (Get-StepCaption $Arguments) -Percent (-1)
         Show-Progress -Caption "Подготовка Python" -Percent (-1)
         $python = Ensure-BootstrapPython
         # The engine writes progress events here; this loop tails the file.
@@ -618,6 +622,8 @@ function Invoke-Engine {
             RedirectStandardOutput = $logFile
             RedirectStandardError = $errFile
         }
+        # -PassThru emits the process object; that IS the value we want, so it
+        # is assigned explicitly and never left to escape.
         $process = Start-Process @startArgs
 
         # The child may not have created its log yet; wait for it instead of
@@ -628,7 +634,7 @@ function Invoke-Engine {
             [System.Windows.Forms.Application]::DoEvents()
             $waited += 1
         }
-        if (-not (Test-Path -LiteralPath $logFile -PathType Leaf)) { New-Item -ItemType File -Path $logFile -Force | Out-Null }
+        if (-not (Test-Path -LiteralPath $logFile -PathType Leaf)) { [void](New-Item -ItemType File -Path $logFile -Force) }
 
         $stream = New-Object System.IO.FileStream($logFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
         $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
@@ -664,13 +670,37 @@ function Invoke-Engine {
                 }
             }
         }
-        # [int]$null is 0 in PowerShell, so an ExitCode that never got set
-        # (Start-Process -PassThru can leave it null) would look like success -
-        # exactly the "Подготовка завершена" the player got after a real
-        # failure.  Unknown is a failure, never a success.
+        # Start-Process -PassThru can leave ExitCode unset even after the
+        # process has exited, and this produced BOTH bugs the player saw:
+        #   * [int]$null is 0, so an unknown code looked like success (the
+        #     "Готово. Запускаю игру." with no game);
+        #   * then "unknown means failure" turned a healthy run into
+        #     "Не удалось сохранить настройки" every other click.
+        # An unknown code is not evidence either way, so fall back to what the
+        # engine actually said: an error on stderr is a failure, a report on
+        # stdout is a success, and silence means it never ran.
         $process.Refresh()
-        $code = 1
-        if ($null -ne $process.ExitCode) { $code = [int]$process.ExitCode }
+        $exitKnown = $false
+        $code = 0
+        try {
+            if ($null -ne $process.ExitCode) {
+                $code = [int]$process.ExitCode
+                $exitKnown = $true
+            }
+        } catch {
+            $exitKnown = $false
+        }
+        if (-not $exitKnown) {
+            if ($hadError) {
+                $code = 1
+                [void](Write-Log "Код возврата недоступен; в выводе есть ошибка — считаю шаг неудачным.")
+            } elseif ($script:lastEngineLine) {
+                $code = 0
+                [void](Write-Log "Код возврата недоступен, но шаг отчитался об успехе.")
+            } else {
+                $code = 1
+            }
+        }
         # Every real step reports either what it did or what went wrong.  A run
         # that printed NOTHING and exited on its own is not a success: it never
         # reached the engine.  This is what turned "unknown option --progress"
@@ -681,7 +711,9 @@ function Invoke-Engine {
             [void](Write-Log "Проверьте, что путь к Python рабочий; лаунчер попробует другой при следующем запуске.")
             return 1
         }
-        return $code
+        # One number, nothing else: an array here is what made a successful
+        # save look like a failure.
+        return [int]$code
     } catch {
         [void](Write-Log ("Ошибка: " + $_.Exception.Message))
         Write-CrashLog ("Ошибка движка: " + $_.Exception.Message)
@@ -863,7 +895,11 @@ function Save-Fields {
         $value = Get-FieldText -Tag $field[0]
         if ($value) { $arguments += @($field[1], $value) }
     }
-    return (Get-ExitCode (Invoke-Engine -Arguments $arguments))
+    # The exit code and nothing else: `return (Get-ExitCode ...)` also writes
+    # the value to the pipeline, so a caller that wraps it in @() gets an
+    # array.
+    $code = Get-ExitCode (Invoke-Engine -Arguments $arguments)
+    return [int]$code
 }
 
 $quit.Add_Click({ $form.Close() })
