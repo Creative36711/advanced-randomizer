@@ -1,10 +1,10 @@
 # Builds the one file a player double-clicks: AdvancedRandomizer.exe
 #
-# The compiler is csc.exe that ships inside Windows itself, so there is no SDK
-# to install and the result needs no .NET download either: it runs on the .NET
-# Framework every Windows 10 already has.  The exe is a bootstrapper only - the
-# window and all decisions stay in launcher\start, which is versioned and
-# testable; this job just wraps it so a double-click cannot flash a console.
+# The compiler is csc.exe, which ships inside Windows itself, so this job needs
+# no .NET SDK and the result needs no runtime download: it runs on the .NET
+# Framework every Windows 10 already has.  The exe is only a bootstrapper - the
+# window, the decisions and the Russian text stay in launcher\start, which is
+# versioned and covered by tests.
 name: Launcher exe
 
 on:
@@ -29,22 +29,24 @@ jobs:
         shell: pwsh
         run: |
           $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-          if (-not (Test-Path $csc)) {
+          if (-not (Test-Path -LiteralPath $csc)) {
             $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe'
           }
-          if (-not (Test-Path $csc)) { throw 'csc.exe not found in this Windows image' }
+          Write-Host "compiler: $csc"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          & $csc /nologo /target:winexe /platform:anycpu /optimize+ `
-                 /out:dist/AdvancedRandomizer.exe `
-                 /r:System.dll /r:System.Windows.Forms.dll `
-                 launcher/build/Program.cs
-          if ($LASTEXITCODE -ne 0) { throw "csc failed with $LASTEXITCODE" }
+          $arguments = @(
+            '/nologo', '/target:winexe', '/platform:anycpu', '/optimize+',
+            '/out:dist/AdvancedRandomizer.exe',
+            '/r:System.dll', '/r:System.Windows.Forms.dll',
+            'launcher/build/Program.cs'
+          )
+          & $csc $arguments
+          if ($LASTEXITCODE -ne 0) { throw "csc failed with exit code $LASTEXITCODE" }
           Get-Item dist/AdvancedRandomizer.exe | Format-List Name, Length
 
       - name: Assemble the player's download
         shell: pwsh
         run: |
-          # One archive: the exe, the launcher scripts it drives, and the docs.
           $stage = 'dist/AdvancedRandomizer'
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item dist/AdvancedRandomizer.exe $stage
@@ -66,6 +68,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view $env:GITHUB_REF_NAME 2>$null
-          if ($LASTEXITCODE -ne 0) { gh release create $env:GITHUB_REF_NAME --generate-notes }
-          gh release upload $env:GITHUB_REF_NAME dist/AdvancedRandomizer.exe dist/AdvancedRandomizer-windows.zip --clobber
+          $tag = $env:GITHUB_REF_NAME
+          # `gh release view` fails for a tag with no release yet; that is the
+          # expected case here, so the exit code is inspected, not propagated.
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --generate-notes
+            if ($LASTEXITCODE -ne 0) { throw "gh release create failed: $LASTEXITCODE" }
+          }
+          gh release upload $tag dist/AdvancedRandomizer.exe dist/AdvancedRandomizer-windows.zip --clobber
+          if ($LASTEXITCODE -ne 0) { throw "gh release upload failed: $LASTEXITCODE" }
