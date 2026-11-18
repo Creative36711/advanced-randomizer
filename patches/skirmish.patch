@@ -1,0 +1,630 @@
+--- a/game/src/core/game_state.gd
++++ b/game/src/core/game_state.gd
+@@ -35,6 +35,7 @@
+ var retail_enemy_faction: String = "men"
+ ## RULES tab values for the retail slice. -1 keeps the slice's authored
+ ## starting resources; the factor multiplies its authored command point cap.
++var retail_randomizer: Dictionary = {}
+ var retail_initial_resources: int = -1
+ var retail_command_point_factor: float = 1.0
+ ## RULES tab building mode. false = today's BFME2 freeform porter placement
+@@ -151,6 +152,7 @@
+ 	retail_mp_port = 26015
+ 	retail_player_faction = "men"
+ 	retail_enemy_faction = "men"
++	retail_randomizer = {}
+ 	retail_initial_resources = -1
+ 	retail_command_point_factor = 1.0
+ 	retail_build_plots_only = false
+--- a/game/src/retail_slice/retail_command.gd
++++ b/game/src/retail_slice/retail_command.gd
+@@ -14,6 +14,8 @@
+ 	"issue_exit_garrison",
+ 	"issue_construct",
+ 	"issue_expansion_construct",
++	"ar_draft",
++	"ar_reroll",
+ 	"queue_unit",
+ 	"queue_structure_upgrade",
+ 	"queue_battalion_upgrade",
+@@ -50,6 +52,10 @@
+ 		return false
+ 	if typeof(cmd.get("args")) != TYPE_DICTIONARY:
+ 		return false
++	if cmd.type == "ar_draft":
++		return cmd.args.size() == 2 and cmd.args.get("offer") is int and cmd.args.offer > 0 and cmd.args.get("index") is int and cmd.args.index >= 0 and cmd.args.index < 3
++	if cmd.type == "ar_reroll":
++		return cmd.args.size() == 1 and cmd.args.get("producer") is int and cmd.args.producer > 0
+ 	return _is_primitive_dictionary(cmd["args"] as Dictionary)
+ 
+ 
+--- a/game/src/retail_slice/retail_lockstep_session.gd
++++ b/game/src/retail_slice/retail_lockstep_session.gd
+@@ -52,7 +52,8 @@
+ 
+ ## Bumped 1 -> 2 for the N-player handshake (join/welcome replace the old
+ ## symmetric hello) and the relay envelopes. A v1 peer is refused, not guessed at.
+-const PROTOCOL_VERSION := 2
++const PROTOCOL_VERSION := 3 # Advanced Randomizer: extended match settings / commands
++const ARConfig := preload("res://scripts/modes/randomizer/randomizer_config.gd")
+ const MAX_PACKET_BYTES := 256 * 1024
+ const MAX_COMMANDS_PER_BUNDLE := 256
+ const HASH_INTERVAL_TICKS := 30
+@@ -541,7 +542,7 @@
+ 	if not connected:
+ 		return
+ 	if not _is_host and not _join_sent and _peer != null and _peer.is_active():
+-		_send_to_peer(_peer, {"kind": "join", "version": PROTOCOL_VERSION})
++		_send_to_peer(_peer, {"kind": "join", "version": PROTOCOL_VERSION, "balance": ARConfig.fingerprint()})
+ 		_join_sent = true
+ 	if handshake_complete and sim != null:
+ 		_send_ready_bundles()
+@@ -817,7 +818,7 @@
+ 
+ ## Host side. Seats a guest, or refuses it with a stated reason.
+ func _receive_join(event_peer: ENetPacketPeer, envelope: Dictionary) -> void:
+-	if envelope.size() != 2 or typeof(envelope.get("version")) != TYPE_INT:
++	if envelope.size() not in [2, 3] or typeof(envelope.get("version")) != TYPE_INT:
+ 		rejected_packets += 1
+ 		return
+ 	var key := event_peer.get_instance_id()
+@@ -829,6 +830,9 @@
+ 		_refuse(event_peer, "Different game version (needs protocol v%d, this host speaks v%d)." % [
+ 			int(envelope["version"]), PROTOCOL_VERSION,
+ 		])
++		return
++	if envelope.get("balance") != ARConfig.fingerprint():
++		_refuse(event_peer, "Randomizer balance database or Godot version differs.")
+ 		return
+ 	# Late join is out of scope: once the first tick bundle has gone out the
+ 	# match is running and a new seat could never be made consistent.
+@@ -866,16 +870,7 @@
+ 	_broadcast_seat_table()
+ 	_broadcast_hero_table()
+ 	if not lobby_settings.is_empty():
+-		_send_to_peer(event_peer, {
+-			"kind": "lobby.settings",
+-			"map_id": String(lobby_settings["map_id"]),
+-			"resources": int(lobby_settings["resources"]),
+-			"cp_factor": float(lobby_settings["cp_factor"]),
+-			"build_plots": bool(lobby_settings["build_plots"]),
+-			"allow_custom_heroes": bool(lobby_settings.get("allow_custom_heroes", true)),
+-			"allow_ring_heroes": bool(lobby_settings.get("allow_ring_heroes", true)),
+-			"logic_random_seed": int(lobby_settings.get("logic_random_seed", 0)),
+-		})
++		_send_to_peer(event_peer, lobby_settings.merged({"kind": "lobby.settings"}))
+ 	# The host's own announced profile is not part of the table until it has
+ 	# been announced; if it already was, replay it to the newcomer so its 1v1
+ 	# mirror (lobby_remote_profile) fills in exactly as in a two-player game.
+@@ -1687,14 +1682,19 @@
+ 	cp_factor: float,
+ 	build_plots: bool,
+ 	allow_custom_heroes: bool = true,
+-	allow_ring_heroes: bool = true
++	allow_ring_heroes: bool = true,
++	randomizer: Dictionary = {}
+ ) -> bool:
+ 	## HOST-ONLY authoritative. A guest calling this is a no-op fail-closed.
+ 	if not _is_host or not handshake_complete \
+ 		or not _lobby_settings_fields_valid(map_id, resource_amount, cp_factor, build_plots):
+ 		return false
++	if not randomizer.is_empty() and not ARConfig.valid(randomizer):
++		return false
+ 	var seed := int(lobby_settings.get("logic_random_seed", 0))
+-	if seed == 0:
++	if randomizer.get("enabled", false):
++		seed = String(randomizer.seed).sha256_text().left(15).hex_to_int()
++	elif seed == 0:
+ 		seed = (Time.get_ticks_usec() ^ int(Time.get_unix_time_from_system())) & 0x7FFFFFFF
+ 	lobby_settings = {
+ 		"map_id": map_id,
+@@ -1705,16 +1705,9 @@
+ 		"allow_ring_heroes": allow_ring_heroes,
+ 		"logic_random_seed": seed,
+ 	}
+-	_send_envelope({
+-		"kind": "lobby.settings",
+-		"map_id": map_id,
+-		"resources": resource_amount,
+-		"cp_factor": cp_factor,
+-		"build_plots": build_plots,
+-		"allow_custom_heroes": allow_custom_heroes,
+-		"allow_ring_heroes": allow_ring_heroes,
+-		"logic_random_seed": seed,
+-	})
++	if randomizer.get("enabled", false):
++		lobby_settings["randomizer"] = randomizer.duplicate(true)
++	_send_envelope(lobby_settings.merged({"kind": "lobby.settings"}))
+ 	_connection.flush()
+ 	return true
+ 
+@@ -1878,7 +1871,8 @@
+ 
+ func _receive_lobby_settings(envelope: Dictionary) -> void:
+ 	## Settings are host-authoritative: the host never accepts them from a guest.
+-	if _is_host or not handshake_complete or envelope.size() != 8 \
++	if _is_host or not handshake_complete or envelope.size() != (9 if envelope.has("randomizer") else 8) \
++		or (envelope.has("randomizer") and not ARConfig.valid(envelope.randomizer)) \
+ 		or typeof(envelope.get("map_id")) != TYPE_STRING \
+ 		or typeof(envelope.get("resources")) != TYPE_INT \
+ 		or typeof(envelope.get("cp_factor")) != TYPE_FLOAT \
+@@ -1900,6 +1894,8 @@
+ 		"allow_ring_heroes": bool(envelope["allow_ring_heroes"]),
+ 		"logic_random_seed": int(envelope["logic_random_seed"]),
+ 	}
++	if envelope.has("randomizer"):
++		lobby_settings["randomizer"] = envelope.randomizer.duplicate(true)
+ 	lobby_updated.emit()
+ 
+ 
+--- a/game/src/retail_slice/retail_sim_ai.gd
++++ b/game/src/retail_slice/retail_sim_ai.gd
+@@ -105,6 +105,9 @@
+ 	var _sim = sim
+ 	var queue_interval := maxi(15, int(_sim._rules.get("ai_queue_interval_ticks", 60)) * int(profile.get("queue_interval_permille", 1000)) / 1000)
+ 	if not (_sim.base_loop_enabled and _sim.tick_index % queue_interval == 0):
++		return
++	if _sim.randomizer != null and (_sim.randomizer.config.shuffle_units or _sim.randomizer.config.shuffle_heroes):
++		_sim.randomizer.commands.train_ai(_sim.randomizer, team)
+ 		return
+ 	# The manifest plan runs EVERY window — it is the proven baseline the
+ 	# whole battery is pinned to, and it must never get weaker.
+--- a/game/src/retail_slice/retail_sim_construction.gd
++++ b/game/src/retail_slice/retail_sim_construction.gd
+@@ -525,7 +525,7 @@
+ 			continue
+ 		if bool(site.get("builder_free", false)):
+ 			# Foundation behavior: plot-built expansions rise without a porter.
+-			var elapsed := int(site.get("construction_elapsed_ticks", 0)) + 1
++			var elapsed: int = int(site.get("construction_elapsed_ticks", 0)) + (_sim.randomizer.chaos.work_ticks(_sim.randomizer) if _sim.randomizer != null else 1)
+ 			var build_ticks := maxi(1, int(site.get("construction_build_ticks", 1)))
+ 			site["construction_elapsed_ticks"] = elapsed
+ 			site["construction_progress"] = minf(1.0, float(elapsed) / float(build_ticks))
+@@ -557,7 +557,7 @@
+ 		# from (and then hijack completion of) the active build.
+ 		if int(builder.get("construction_id", 0)) != structure_id:
+ 			continue
+-		var elapsed := int(site.get("construction_elapsed_ticks", 0)) + 1
++		var elapsed: int = int(site.get("construction_elapsed_ticks", 0)) + (_sim.randomizer.chaos.work_ticks(_sim.randomizer) if _sim.randomizer != null else 1)
+ 		var build_ticks := maxi(1, int(site.get("construction_build_ticks", 1)))
+ 		site["construction_elapsed_ticks"] = elapsed
+ 		site["construction_progress"] = minf(1.0, float(elapsed) / float(build_ticks))
+--- a/game/src/retail_slice/retail_sim_persistence.gd
++++ b/game/src/retail_slice/retail_sim_persistence.gd
+@@ -53,7 +53,19 @@
+ 	for required_key in ["tick_index", "entities", "structures", "team_resources", "pending_commands", "next_dynamic_id"]:
+ 		if not state.has(required_key):
+ 			return false
++	var options = state.get("rules", {}).get("randomizer", {})
++	var mode = null
++	if not options.is_empty():
++		if not _sim.RandomizerMode.Config.valid(options):
++			return false
++		if options.enabled:
++			mode = _sim.RandomizerMode.new(_sim, options)
++			if mode.db.digest != state.get("randomizer", {}).get("balance"):
++				return false
++	_sim.randomizer = mode
+ 	restore_authoritative_state(state)
++	if mode != null:
++		mode.restore(state.randomizer)
+ 	_sim.selected_ids.clear()
+ 	_sim.reset_control_groups()
+ 	_sim.events.clear()
+@@ -334,6 +346,8 @@
+ 	# through its canonical view (zero counters/false flags pruned, every
+ 	# level sorted), so an untouched match contributes zero bytes and state
+ 	# returned to pristine values returns to the pristine hash exactly.
++	if _sim.randomizer != null:
++		state["randomizer"] = _sim.randomizer.snapshot()
+ 	var script_env_view = _sim._script_env_state_view()
+ 	if not script_env_view.is_empty():
+ 		state["script_env_state"] = script_env_view
+--- a/game/src/retail_slice/retail_sim_powers.gd
++++ b/game/src/retail_slice/retail_sim_powers.gd
+@@ -364,6 +364,8 @@
+ 	## otherwise a view of the global (default same-faction) tree. Read-only —
+ 	## team ownership overlays live in the per-team maps, not in the tree.
+ 	var _sim = sim
++	if _sim.randomizer != null and _sim.randomizer.state.get("books", {}).has(team):
++		return _sim.randomizer.state.books[team]
+ 	if _sim._team_spellbooks.has(team):
+ 		return _sim._team_spellbooks[team]
+ 	return _spellbook_global_bundle()
+--- a/game/src/retail_slice/retail_sim_production.gd
++++ b/game/src/retail_slice/retail_sim_production.gd
+@@ -32,8 +32,9 @@
+ 		return {"ok": false, "reason": "created-hero-not-owned"}
+ 	if String(production_rule.get("category", "")) == "hero" and _sim.hero_unavailable(team, unit_type):
+ 		return {"ok": false, "reason": "hero-unavailable"}
++	var source: String = building.get("ar_sources", {}).get(unit_type, unit_type)
+ 	var missing_production_upgrade := production_gate_unsatisfied(
+-		unit_type,
++		source,
+ 		String(building.get("structure_kind", "")),
+ 		Array(building.get("completed_upgrades", [])),
+ 		(_sim.team_upgrades.get(team, {}) as Dictionary).keys(),
+@@ -49,7 +50,7 @@
+ 	var maximum_queue := producer_queue_limit(building)
+ 	if maximum_queue > 0 and queue.size() >= maximum_queue:
+ 		return {"ok": false, "reason": "queue-full"}
+-	var cost := maxi(0, _production_rule_value(unit_type, "cost_rule", "default_cost"))
++	var cost := maxi(0, _production_rule_value(source, "cost_rule", "default_cost"))
+ 	# Zero command points is honored when the document says zero (retail
+ 	# porters are free); the historical clamp to one is gone.
+ 	var command_cost := maxi(0, _production_rule_value(unit_type, "command_points_rule", "default_command_points"))
+@@ -59,7 +60,7 @@
+ 		> _sim.command_point_total_for_team(team)
+ 	):
+ 		return {"ok": false, "reason": "command-point-cap"}
+-	var build_ticks := maxi(1, _production_rule_value(unit_type, "build_ticks_rule", "default_build_ticks"))
++	var build_ticks := maxi(1, _production_rule_value(source, "build_ticks_rule", "default_build_ticks"))
+ 	var production_contract := building.get("production_update", {}) as Dictionary
+ 	for modifier_value in production_contract.get("modifiers", []) as Array:
+ 		var modifier := modifier_value as Dictionary
+@@ -410,7 +411,8 @@
+ 	if production_rule.is_empty():
+ 		return 0
+ 	var gameplay_rule := String(production_rule.get(rule_key, ""))
+-	return int(_sim._rules.get(gameplay_rule, int(production_rule.get(default_key, 0))))
++	var base := int(_sim._rules.get(gameplay_rule, int(production_rule.get(default_key, 0))))
++	return _sim.randomizer.chaos.cost(_sim.randomizer, base) if _sim.randomizer != null and rule_key == "cost_rule" else base
+ 
+ 
+ func producer_id(team: int, kind: String = "barracks") -> int:
+--- a/game/src/retail_slice/retail_sim_upgrades.gd
++++ b/game/src/retail_slice/retail_sim_upgrades.gd
+@@ -321,6 +321,8 @@
+ 				float(building.get("production_multiplier", 1.0)) * production_factor,
+ 				0.0001
+ 			)
++		if _sim.randomizer != null and building.structure_kind == "fortress" and int(contract.get("levels_to_gain", 0)) > 0:
++			_sim.randomizer.draft.trigger(_sim.randomizer, int(building.team))
+ 		_sim._emit_event("upgrade.completed", structure_id, 0, {
+ 			"team": int(building.get("team", -1)),
+ 			"upgrade_id": upgrade_id,
+--- a/game/src/retail_slice/retail_slice_sim.gd
++++ b/game/src/retail_slice/retail_slice_sim.gd
+@@ -792,7 +792,7 @@
+ 		var provided_faction := String((provided_value as Dictionary).get("faction", ""))
+ 		if provided_faction != "":
+ 			distinct_factions[provided_faction] = true
+-	var cross_faction_match := distinct_factions.size() > 1
++	var cross_faction_match: bool = distinct_factions.size() > 1 or _rules.get("randomizer", {}).get("enabled", false) == true
+ 	_team_manifests = {}
+ 	_team_production_scopes = {}
+ 	_team_unit_production_rules = {}
+@@ -1508,6 +1508,10 @@
+ const RING_DEFAULT_ITEM := "TheDroppedRing"
+ 
+ 
++const RandomizerMode := preload("res://scripts/modes/randomizer/randomizer_match.gd")
++var randomizer: RandomizerMode
++var randomizer_match: RandomizerMode
++
+ func setup(map_configuration: Dictionary = {}, gameplay_rules: Dictionary = {}) -> void:
+ 	_ensure_parity()
+ 	parity.clear()
+@@ -1585,6 +1589,17 @@
+ 	script_areas.clear()
+ 	script_waypoints.clear()
+ 	var effective_rules := gameplay_rules if not gameplay_rules.is_empty() else _rules
++	randomizer = null
++	var options = effective_rules.get("randomizer", {})
++	if not options is Dictionary or (not options.is_empty() and not RandomizerMode.Config.valid(options)):
++		configuration_error = "Invalid Advanced Randomizer config"
++		return
++	if options.get("enabled", false):
++		randomizer_match = RandomizerMode.new(self, options)
++		randomizer = randomizer_match
++		if not randomizer.db.error.is_empty():
++			configuration_error = randomizer.db.error
++			return
+ 	var ring_waypoint_family := String(
+ 		(effective_rules.get("ring_system", {}) as Dictionary).get(
+ 			"waypointFamily", "SpawnPoint_SkirmishGollum_"
+@@ -1718,6 +1733,8 @@
+ 	# rows and match-scoped spellbook state.
+ 	if _spellbook_ready and not _spellbook_document.is_empty():
+ 		configure_spellbook_runtime(_spellbook_document)
++	if randomizer != null:
++		randomizer.start()
+ 	_emit_music("explore")
+ 
+ 
+@@ -3606,9 +3623,13 @@
+ 	return ScriptWorldSystemScript._logic_random_draw32(words)
+ 
+ func logic_random_int(low: int, high: int) -> int:
++	if randomizer != null:
++		return randomizer.rng.randi_range(low, high)
+ 	return _script_world_subsystem().logic_random_int(low, high)
+ 
+ func logic_random_real(low: float, high: float) -> float:
++	if randomizer != null:
++		return randomizer.rng.randf_range(low, high)
+ 	return _script_world_subsystem().logic_random_real(low, high)
+ 
+ func attach_script_env(env: SageScriptEnv, team: int) -> bool:
+@@ -3939,6 +3960,8 @@
+ 	# Placed AFTER the legacy pass and touching none of its state, so a fog-off
+ 	# match is byte-identical below this line and the 3000-tick pin cannot move.
+ 	_step_shroud_grid()
++	if randomizer != null:
++		randomizer.tick()
+ 	if base_loop_enabled:
+ 		_step_economy()
+ 		_step_structure_upgrades()
+@@ -5630,13 +5653,15 @@
+ 	return _ability_runtime_subsystem()._timed_modifier_active(row, kind)
+ 
+ func _ability_outgoing_multiplier(row: Dictionary) -> float:
+-	return _ability_runtime_subsystem()._ability_outgoing_multiplier(row)
++	var base: float = _ability_runtime_subsystem()._ability_outgoing_multiplier(row)
++	return base * randomizer.draft.damage_factor(randomizer, row) if randomizer != null and randomizer.config.draft else base
+ 
+ func _ability_incoming_multiplier(row: Dictionary) -> float:
+ 	return _ability_runtime_subsystem()._ability_incoming_multiplier(row)
+ 
+ func _ability_speed_multiplier(row: Dictionary) -> float:
+-	return _ability_runtime_subsystem()._ability_speed_multiplier(row)
++	var base: float = _ability_runtime_subsystem()._ability_speed_multiplier(row)
++	return base * randomizer.chaos.speed(randomizer) if randomizer != null else base
+ 
+ func _ability_vision_multiplier(row: Dictionary) -> float:
+ 	return _ability_runtime_subsystem()._ability_vision_multiplier(row)
+@@ -6413,6 +6438,8 @@
+ 		if not event.has(key):
+ 			event[key] = data[key]
+ 	events.append(event)
++	if randomizer != null and kind == "construction.completed" and data.get("structure_kind") == "fortress":
++		randomizer.draft.trigger(randomizer, data.team)
+ 	for byte in JSON.stringify(event).to_utf8_buffer():
+ 		_event_digest = ((_event_digest ^ int(byte)) * 16777619) & 0xFFFFFFFF
+ 	_next_event_sequence += 1
+@@ -6751,6 +6778,10 @@
+ 			last_command_result = issue_construct(_command_ids(args.get("ids", [])), String(args.get("structure_kind", "")), Vector2(args.get("position", Vector2.ZERO)), bool(args.get("dry_run", false)), team)
+ 		"issue_expansion_construct":
+ 			last_command_result = issue_expansion_construct(team, int(args.get("fortress_id", 0)), String(args.get("expansion_kind", "")), int(args.get("pad_index", -1)))
++		"ar_draft":
++			last_command_result = randomizer.draft.choose(randomizer, team, args.offer, args.index) if randomizer != null else {"ok": false, "reason": "mode-disabled"}
++		"ar_reroll":
++			last_command_result = randomizer.commands.reroll(randomizer, team, args.producer) if randomizer != null else {"ok": false, "reason": "mode-disabled"}
+ 		"queue_unit":
+ 			last_command_result = queue_unit(team, int(args.get("producer", 0)), String(args.get("unit_type", SOLDIER_HORDE_ID)))
+ 		"queue_structure_upgrade":
+--- a/game/src/retail_slice/retail_vertical_slice.gd
++++ b/game/src/retail_slice/retail_vertical_slice.gd
+@@ -1170,7 +1170,7 @@
+ 	var local_faction := _local_presentation_faction(player_faction)
+ 	var visited := {local_faction: true}
+ 	var restore_needed := false
+-	for team_manifest_value in _team_faction_manifests.values():
++	for team_manifest_value in RandomizerContent.manifests(self, local_faction):
+ 		var team_manifest := team_manifest_value as Dictionary
+ 		var team_faction := String(team_manifest.get("faction", "")).strip_edges().to_lower()
+ 		if team_manifest.has("_error"):
+@@ -1601,7 +1601,7 @@
+ 	var extra_playable_runtimes: Dictionary = {}
+ 	var extra_producer_kinds: Dictionary = {}
+ 	var visited_factions := {faction: true}
+-	for team_manifest_value in _team_faction_manifests.values():
++	for team_manifest_value in RandomizerContent.manifests(self, faction):
+ 		var team_manifest := team_manifest_value as Dictionary
+ 		var team_faction := String(team_manifest.get("faction", "")).strip_edges().to_lower()
+ 		if team_faction == "" or visited_factions.has(team_faction) or team_manifest.has("_error"):
+@@ -1685,6 +1685,7 @@
+ 			var ring_system_value: Variant = ContentDB.get("ring_system_runtime")
+ 			if typeof(ring_system_value) == TYPE_DICTIONARY and not (ring_system_value as Dictionary).is_empty():
+ 				rules["ring_system"] = (ring_system_value as Dictionary).duplicate(true)
++	RandomizerContent.add_rules(self, rules)
+ 	rules["source_map_transform_scale"] = source_map_data.local_transform_scale
+ 	# A selected neutral pack promotes exact map Object identities through the
+ 	# edition-scoped scenario registries.
+@@ -4689,17 +4690,31 @@
+ 		if simulation.hero_unavailable(local_team, unit_type):
+ 			locked.append(unit_type)
+ 			continue
++		var source: String = simulation.structures.get(selected_structure_id, {}).get("ar_sources", {}).get(unit_type, unit_type)
+ 		if simulation.production_gate_unsatisfied(
+-			unit_type, structure_kind, completed_upgrades,
++			source, structure_kind, completed_upgrades,
+ 			team_upgrade_ids
+ 		) != "":
+ 			locked.append(unit_type)
+ 	return locked
+ 
+ 
++const RandomizerContent := preload("res://scripts/modes/randomizer/randomizer_content.gd")
++var randomizer_rosters := []
++var randomizer_hud
++
+ func _refresh_hud() -> void:
+ 	if hud == null or simulation == null:
+ 		return
++	if simulation.randomizer != null:
++		if not is_instance_valid(randomizer_hud):
++			randomizer_hud = preload("res://scripts/modes/randomizer/ui/match_hud.gd").new()
++			hud.add_child(randomizer_hud)
++			randomizer_hud.command.connect(_apply_local_command)
++		randomizer_hud.refresh(simulation.randomizer, local_team, selected_structure_id)
++	elif is_instance_valid(randomizer_hud):
++		randomizer_hud.queue_free()
++		randomizer_hud = null
+ 	hud.set_resources(simulation.resources_for_team(local_team), simulation.command_points_for_team(local_team), simulation.command_point_total_for_team(local_team))
+ 	# Cooldown sweeps/purchase states move every tick, and the star orb's
+ 	# power-point count is always on screen: keep the spellbook surface live.
+@@ -5017,6 +5032,9 @@
+ 			var train_button: Button = hud.train_buttons.get(unit_id) as Button
+ 			if train_button == null:
+ 				train_button = hud.hero_buttons.get(unit_id) as Button
++			if structure.get("ar_sources", {}).has(unit_id):
++				entries.append(simulation.randomizer.commands.radial_entry(simulation.randomizer, structure, unit_id, locked_units, train_button, radial_queue_by_unit.get(unit_id, {})))
++				continue
+ 			if train_button == null:
+ 				continue
+ 			# Iconless doc-honest commands (unconverted art) keep their socket
+@@ -6095,7 +6113,7 @@
+ 		"retail_player_faction", "retail_enemy_faction", "retail_map_id",
+ 		"retail_initial_resources", "retail_command_point_factor",
+ 		"retail_build_plots_only", "retail_allow_ring_heroes",
+-		"retail_logic_random_seed", "retail_team_setup",
++		"retail_logic_random_seed", "retail_team_setup", "retail_randomizer",
+ 		"retail_picked_created_hero_documents", "retail_player_start_index",
+ 	]:
+ 		var value: Variant = state.get(key)
+@@ -8715,6 +8733,9 @@
+ 	while _power_fx_event_index < events.size():
+ 		var event: Dictionary = events[_power_fx_event_index]
+ 		_power_fx_event_index += 1
++		if event.kind in ["randomizer.meteor.incoming", "randomizer.meteor.impact"]:
++			preload("res://scripts/modes/randomizer/ui/meteor_fx.gd").present(self, event)
++			continue
+ 		if String(event.get("kind", "")) != "power.cast":
+ 			continue
+ 		var point_value: Variant = event.get("point")
+--- a/game/src/ui/main_menu.gd
++++ b/game/src/ui/main_menu.gd
+@@ -3273,6 +3273,8 @@
+ 	## Guarded: a launch may never be judged against an unpopulated list.
+ 	if not _ensure_skirmish_options():
+ 		return "Skirmish availability is still loading."
++	if not solo_flyout.randomizer_panel.valid():
++		return "Randomizer: enter a seed containing 1–32 letters or digits."
+ 	_ensure_all_faction_verdicts()
+ 	var selected_map := _selected_skirmish_map()
+ 	if selected_map != "":
+@@ -3475,6 +3477,8 @@
+ 	# A solo launch is always single-player: clear any multiplayer selection a
+ 	# previous NETWORK visit left behind so the slice never hosts by surprise.
+ 	_game_state.set("retail_mp_mode", "")
++	var cfg: Dictionary = solo_flyout.randomizer_panel.values()
++	_game_state.set("retail_randomizer", cfg if cfg.enabled else {})
+ 	var map_id := _selected_skirmish_map()
+ 	# Legacy two-side fields: row 0 is the human, the first AI slot is the "enemy".
+ 	# They stay authoritative for the byte-identical default launch and remain the
+@@ -3612,6 +3616,8 @@
+ 
+ 
+ func _on_rules_reset() -> void:
++	solo_flyout.randomizer_panel.apply({})
++	solo_flyout.engine_opt.disabled = false
+ 	_select_option_by_metadata_value(solo_flyout.initial_resources_opt, RULES_DEFAULT_RESOURCES)
+ 	_select_option_by_metadata_value(solo_flyout.cp_factor_opt, RULES_DEFAULT_FACTOR)
+ 	_select_option_by_metadata_value(solo_flyout.build_mode_opt, RULES_DEFAULT_BUILD_PLOTS_ONLY)
+@@ -4170,6 +4176,7 @@
+ 	_game_state.set("retail_player_faction", String((roster[0] as Dictionary)["faction"]))
+ 	_game_state.set("retail_enemy_faction", String((roster[1] as Dictionary)["faction"]))
+ 	_game_state.set("retail_map_id", battlefield)
++	_game_state.set("retail_randomizer", {})
+ 	_game_state.set("retail_initial_resources", int((configured["gameplay_rules"] as Dictionary).get("starting_resources", -1)))
+ 	_game_state.set("retail_command_point_factor", 1.0)
+ 	_game_state.set("retail_build_plots_only", false)
+--- a/game/src/ui/multiplayer_lobby.gd
++++ b/game/src/ui/multiplayer_lobby.gd
+@@ -104,6 +104,7 @@
+ var launch_button: Button
+ var leave_button: Button
+ 
++var randomizer_panel := preload("res://scripts/modes/randomizer/ui/lobby_panel.gd").new()
+ var _launched := false
+ var _was_connected := false
+ var _profile_dirty := false
+@@ -199,6 +200,19 @@
+ 	heading_label.add_theme_font_size_override("font_size", 20)
+ 	heading_label.add_theme_color_override("font_color", Color(0.82, 0.9, 0.78))
+ 	add_child(heading_label)
++	var modal := PopupPanel.new()
++	add_child(modal)
++	modal.add_child(randomizer_panel)
++	var settings_button := Button.new()
++	settings_button.text = "Randomizer…"
++	settings_button.position = Vector2(size.x - 164, 0)
++	add_child(settings_button)
++	settings_button.pressed.connect(func(): modal.popup_centered(Vector2i(490, 225)))
++	randomizer_panel.changed.connect(func():
++		if randomizer_panel.valid():
++			_send_settings()
++		_refresh_buttons()
++	)
+ 
+ 	# --- player rows, REF-09 column layout (left column) ---------------------
+ 	var columns := [
+@@ -525,6 +539,7 @@
+ 
+ 
+ func _set_settings_editable(editable: bool) -> void:
++	randomizer_panel.set_writable(editable)
+ 	map_opt.visible = editable
+ 	resources_opt.visible = editable
+ 	cp_opt.visible = editable
+@@ -867,7 +882,8 @@
+ 	session.send_lobby_settings(
+ 		String(settings["map_id"]), int(settings["resources"]),
+ 		float(settings["cp_factor"]), bool(settings["build_plots"]),
+-		bool(settings["allow_custom_heroes"])
++		bool(settings["allow_custom_heroes"]), true,
++		randomizer_panel.values() if randomizer_panel.flags.enabled.button_pressed else {}
+ 	)
+ 
+ 
+@@ -878,6 +894,7 @@
+ 
+ 
+ func _apply_settings_to_controls(settings: Dictionary) -> void:
++	randomizer_panel.apply(settings.get("randomizer", {}))
+ 	var map_index: int = SessionScript.LOBBY_MAP_IDS.find(String(settings.get("map_id", "")))
+ 	if map_index >= 0:
+ 		map_opt.select(map_index)
+@@ -915,7 +932,7 @@
+ 	if connected:
+ 		everyone_ready = local_ready_check.button_pressed and not _profile_dirty \
+ 			and bool(session.all_seats_ready())
+-	launch_button.disabled = not (is_host and everyone_ready)
++	launch_button.disabled = not (is_host and everyone_ready and randomizer_panel.valid())
+ 	if connected and is_host and not everyone_ready and not _launched:
+ 		var pending: Array = session.seats_not_ready()
+ 		if session.seat_count() < 2:
+@@ -926,6 +943,8 @@
+ 
+ func _on_launch_pressed() -> void:
+ 	if session == null or _launched:
++		return
++	if not randomizer_panel.valid():
+ 		return
+ 	_announce_profile()
+ 	if not session.send_lobby_launch():
+@@ -956,6 +975,7 @@
+ 	var settings: Dictionary = session.lobby_launch_settings
+ 	var host_descriptor := roster[0] as Dictionary
+ 	var guest_descriptor := roster[1] as Dictionary
++	game_state.set("retail_randomizer", settings.get("randomizer", {}).duplicate(true))
+ 	game_state.set("retail_player_faction", String(host_descriptor.get("faction", "men")))
+ 	game_state.set("retail_enemy_faction", String(guest_descriptor.get("faction", "men")))
+ 	game_state.set("retail_map_id", String(settings.get("map_id", "bfme2.map.fords-of-isen-ii")))
+--- a/game/src/ui/skirmish_setup.gd
++++ b/game/src/ui/skirmish_setup.gd
+@@ -51,6 +51,7 @@
+ var custom_heroes_toggle: CheckButton
+ var ring_heroes_toggle: CheckButton
+ var engine_opt: OptionButton
++var randomizer_panel := preload("res://scripts/modes/randomizer/ui/lobby_panel.gd").new()
+ var rules_reset_btn: Button
+ var hero_dropdowns: Array[OptionButton] = []
+ var team_dropdowns: Array[OptionButton] = []
+@@ -196,6 +197,15 @@
+ 	ring_heroes_toggle.position = Vector2(560, 64)
+ 	ring_heroes_toggle.size = Vector2(320, 36)
+ 	rules_content.add_child(ring_heroes_toggle)
++	rules_content.add_child(randomizer_panel)
++	randomizer_panel.position = Vector2(560, 106)
++	randomizer_panel.changed.connect(func():
++		var enabled: bool = randomizer_panel.flags.enabled.button_pressed
++		if enabled:
++			engine_opt.select(0)
++		engine_opt.disabled = enabled
++		rules_changed.emit()
++	)
+ 	rules_reset_btn = _button(rules_content, "RulesReset", "RESET", Vector2(rules_content.size.x - 290, rules_content.size.y - 60), Vector2(260, 48))
+ 
+ 
