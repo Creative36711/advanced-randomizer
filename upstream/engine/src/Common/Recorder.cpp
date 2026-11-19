@@ -19,7 +19,9 @@ const char kMagic[8] = { 'O', 'B', 'F', 'M', 'E', 'R', 'E', 'P' };
 // entries' spawn ids and the players' hero records; format 12 was never released, so it holds them without a new number) (NewGameMessage::livingWorldBattle, which the lobby's
 // wire does not carry). Only a battle's recording is written as 12; every other recording stays 11, byte for byte
 constexpr std::uint32_t kBattleVersion = 12;
-constexpr std::uint32_t kVersion = 11; // 11 (lane CHEAT-1): the GameInfo's Cheat Mode; 10: the build date; 9: the recording build (version, commit); 8 (lane ANTICHEAT-1): the VIEW record; 7 (lane OWNERFIX-2): the GameInfo slots' handicaps; 6 (lane SAVE-2): the execution profile switch record, duplicate records refused; 2: the profile identity, GameMessage format 2 (u32 argument counts), lost-command records; 3 (lane HERO-2): the GameInfo slots' Create-a-Hero records; 4 (lane RULES-1): the GameInfo's game rules and Legendary Heroes factor; 5 (lane UBER-1): the GameInfo's simulation profile
+constexpr std::uint32_t kVersion = 12; // the current format: a GameInfo that may carry the Chaos flag
+constexpr std::uint32_t kVersionWithoutChaos = 11; // what a game that is not chaos stamps: its bytes are format 11's exactly
+// 12 (lane CHAOS-1): the GameInfo's Chaos flag (a chaos game only); 11 (lane CHEAT-1): the GameInfo's Cheat Mode; 10: the build date; 9: the recording build (version, commit); 8 (lane ANTICHEAT-1): the VIEW record; 7 (lane OWNERFIX-2): the GameInfo slots' handicaps; 6 (lane SAVE-2): the execution profile switch record, duplicate records refused; 2: the profile identity, GameMessage format 2 (u32 argument counts), lost-command records; 3 (lane HERO-2): the GameInfo slots' Create-a-Hero records; 4 (lane RULES-1): the GameInfo's game rules and Legendary Heroes factor; 5 (lane UBER-1): the GameInfo's simulation profile
 enum : std::uint8_t
 {
 	RECORD_FRAME = 1,
@@ -338,7 +340,7 @@ bool parseReplay(const std::vector<std::uint8_t> &bytes, ReplayFile &out, std::s
 			return failWith(error, "invalid replay recording build");
 		}
 	}
-	if (!NetPacket::readNewGameMessage(r, h.game, error, version >= 7, version >= 11)) // lane CHEAT-1: the Cheat Mode i32 from format 11
+	if (!NetPacket::readNewGameMessage(r, h.game, error, version >= 7, version >= 11, false, version >= 12)) // lane CHEAT-1: the Cheat Mode i32 from format 11; lane CHAOS-1: the Chaos flag from 12
 	{
 		return false;
 	}
@@ -529,7 +531,9 @@ bool ReplayWriter::open(const std::string &path, const ReplayHeader &h, std::str
 	write(std::vector<std::uint8_t>(kMagic, kMagic + sizeof(kMagic)));
 	NetByteWriter w;
 	const bool battle = h.game.livingWorldBattle.active;
-	w.u32(battle ? kBattleVersion : kVersion);
+	// lane CHAOS-1: only a chaos game's GameInfo carries the flag, so only it is stamped 12; every other recording keeps the version it had (11 or the
+	// battle format), and a reader of 12 knows the flag is there. Stamping 12 for a normal game would say "a flag follows" and lie
+	w.u32(battle ? kBattleVersion : (h.game.game.chaosModeOn() ? kVersion : kVersionWithoutChaos));
 	w.str(h.profile.text);
 	w.str(h.buildVersion.empty() ? BuildVersion::kVersion : h.buildVersion);
 	w.str(h.buildCommit.empty() ? BuildVersion::kCommit : h.buildCommit);

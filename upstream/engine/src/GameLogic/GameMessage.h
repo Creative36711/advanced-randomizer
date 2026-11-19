@@ -212,13 +212,16 @@ enum GameMessageType : int
 	// WOTR2 milestone 8 (step 4): a LAN war's save request (ask / refuse / save). RotWK sends it as the lockstep's NETCOMMANDTYPE_SAVE_GAME (type 30, RW
 	// 0x8D5273 -> ProcessSaveGameCommand RW 0x629750, stamped by the packet router for its next frame); the port carries it as a strategic order in the
 	// command stream [S-1344: the one observable difference: the Yes / No box appears at the order's execution frame]. OpenBFME's range, as the cheat
-	MSG_LW_OPENBFME_SAVE = 32002
+	MSG_LW_OPENBFME_SAVE = 32002,
+	// lane CHAOS-1: run one Chaos event now (GameLogic/ChaosMode.h). The schedule runs on its own; this type is for the host forcing an event (a
+	// stream, a test, a replay of a good moment) and for the announcement path, and it is refused when the game is not a Chaos game
+	MSG_OPENBFME_CHAOS = 32003
 };
 
 // lane CHEAT-1: a type the network, the replay and the logic dispatcher carry: retail's logic range plus MSG_OPENBFME_CHEAT
 inline bool IsNetworkLogicMessageType(int type)
 {
-	return (type > MSG_BEGIN_NETWORK_MESSAGES && type < MSG_END_NETWORK_MESSAGES) || type == MSG_OPENBFME_CHEAT;
+	return (type > MSG_BEGIN_NETWORK_MESSAGES && type < MSG_END_NETWORK_MESSAGES) || type == MSG_OPENBFME_CHEAT || type == MSG_OPENBFME_CHAOS;
 }
 
 // RW recorder readArgument order

@@ -389,6 +389,12 @@ void NetPacket::writeGameInfo(NetByteWriter &w, const SkirmishGameInfo &g, bool 
 		w.i32(g.slots[i].handicap); // lane OWNERFIX-2: GameSlot + 0x20 (RotWK's LAN option string carries it as "Handicap=%d", RW 0x8476E6 = BFME2 decomp BfmeAptScreenLanLobby.cpp AptLanLobby::MpOwnerSelectHandicap, tier A)
 	}
 	w.i32(g.cheatMode); // lane CHEAT-1: Cheat Mode (-1 off, else the cheat seat's slot)
+	// lane CHAOS-1: ONLY a chaos game writes this, and the recording's format version says so (Recorder's version 12). A normal game's GameInfo keeps its
+	// exact bytes, and its recording stays the version it was, so no reader ever has to guess whether the four bytes are there
+	if (g.chaosModeOn())
+	{
+		w.i32(g.chaosMode);
+	}
 	if (warFields)
 	{
 		w.u8((std::uint8_t)g.gameMode); // WOTR2 milestone 8: GT (+ 0x5C) and SI (+ 0x58, the scenario's name)
@@ -399,7 +405,7 @@ void NetPacket::writeGameInfo(NetByteWriter &w, const SkirmishGameInfo &g, bool 
 }
 
 bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string *error, bool profileOptionalAtEnd, bool slotHandicaps, bool cheatField,
-	bool warFields)
+	bool warFields, bool chaosField)
 {
 	g = SkirmishGameInfo();
 	const std::int32_t firstState = r.i32();
@@ -482,6 +488,21 @@ bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string 
 	}
 	// lane CHEAT-1: Cheat Mode (absent: an older replay / save format or an announcement without the profile: off)
 	g.cheatMode = (!cheatField || handicapsAbsent) ? -1 : r.i32();
+	// lane CHAOS-1: a chaos game's GameInfo ends with this flag, and its recording says so (Recorder's version 12: `chaosField` is false for every older
+	// recording, which ends at the cheat field). A game that is not chaos has no field at all, so this never guesses: the caller decides
+	g.chaosMode = 0;
+	if (chaosField && !handicapsAbsent && !r.failed())
+	{
+		const std::int32_t flag = r.i32();
+		if (flag == 1)
+		{
+			g.chaosMode = 1;
+		}
+		else if (flag != 0)
+		{
+			return failWith(error, "GameInfo Chaos flag " + std::to_string(flag) + " is not 0 or 1");
+		}
+	}
 	if (warFields && !handicapsAbsent)
 	{
 		g.gameMode = r.u8(); // WOTR2 milestone 8
@@ -583,7 +604,7 @@ void NetPacket::writeNewGameMessage(NetByteWriter &w, const NewGameMessage &m, b
 	writeGameInfo(w, m.game, warFields);
 }
 
-bool NetPacket::readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::string *error, bool slotHandicaps, bool cheatField, bool warFields)
+bool NetPacket::readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::string *error, bool slotHandicaps, bool cheatField, bool warFields, bool chaosField)
 {
 	const std::uint8_t mode = r.u8();
 	if (mode > 1)
@@ -593,7 +614,7 @@ bool NetPacket::readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::str
 	m.mode = mode ? NewGameMode::Skirmish : NewGameMode::SinglePlayer;
 	m.difficulty = r.i32();
 	m.rankPoints = r.i32();
-	return readGameInfo(r, m.game, error, false, slotHandicaps, cheatField, warFields);
+	return readGameInfo(r, m.game, error, false, slotHandicaps, cheatField, warFields, chaosField);
 }
 
 std::vector<std::uint8_t> NetPacket::encodeCommand(const NetCommandMsg &c, std::string *error, MessageFamily family)

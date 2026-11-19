@@ -97,8 +97,10 @@ public:
 	// OPT_SLOT_CREATE_A_HERO; 3 (lane OWNERFIX-2): the GameInfo slots' handicaps and the slot request's handicap; 4 (lane CHEAT-1): the GameInfo's Cheat Mode;
 	// 5 (WOTR2 milestone 8): the GameInfo's game mode and scenario (a War of the Ring's LanStrategic game; RotWK sends it as type 14, MSG_GAME_START + 1);
 	// 6 (step 4): a resumed war's save identity and state hash (the list's resume icon, Continue); 7 (Sol wotr2m8s4 follow-up 1): a LAN war's save answer
-	// and leave vote name their save request (MSG_LW_OPENBFME_SAVE / MSG_LW_REQUEST_ENDGAME): a build without it is kept out of the lobby
-	static constexpr std::uint8_t kProtocolVersion = 7;
+	// and leave vote name their save request (MSG_LW_OPENBFME_SAVE / MSG_LW_REQUEST_ENDGAME): a build without it is kept out of the lobby;
+	// 8 (CHAOS-1): the GameInfo's Chaos flag (0 or 1) follows Cheat Mode. A build of protocol 7 is refused at the lobby, so the extra four bytes can
+	// never be read as the next message's start
+	static constexpr std::uint8_t kProtocolVersion = 8;
 	enum ReturnType // ZH LANAPIInterface::ReturnType
 	{
 		RET_OK,

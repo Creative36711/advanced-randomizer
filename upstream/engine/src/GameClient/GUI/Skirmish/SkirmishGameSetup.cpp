@@ -656,6 +656,13 @@ void SkirmishGameSetup::resetRules()
 	m_info.rules = MpGameRules::defaults(rulesMode());
 	m_info.legendaryHeroes = LegendaryHeroes::kOff;
 	m_info.cheatMode = -1; // lane CHEAT-1
+	m_info.chaosMode = 0;  // lane CHAOS-1
+}
+
+bool SkirmishGameSetup::setChaos(bool on)
+{
+	m_info.chaosMode = on ? 1 : 0;
+	return true;
 }
 
 bool SkirmishGameSetup::setCheatMode(bool on)

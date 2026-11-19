@@ -170,6 +170,9 @@ struct SkirmishGameInfo
 	// (the host's slot, a human slot). Every player sees it before joining (the game lists), on the load screen and in game; never in Quick Match
 	int cheatMode = -1;
 	bool cheatModeOn() const { return cheatMode >= 0; }
+	// lane CHAOS-1, OpenBFME (not retail): the Chaos mode (GameLogic/ChaosMode.h): 0 off, 1 on. Host-only, every peer must agree before the game starts
+	int chaosMode = 0;
+	bool chaosModeOn() const { return chaosMode != 0; }
 	// WOTR2 milestone 8 (step 2): RotWK GameInfo + 0x5C (GT: 0 open play, 1 War of the Ring; GameInfoToAsciiString RW 0x8023C1) and + 0x58 (SI: the
 	// scenario, an index into the campaign manager's list, RW 0x7B9636). The port sends the scenario as its LivingWorldCampaign name [port decision: no
 	// list order to agree on]; "" in open play. In a war a slot's start position is a region index (RW 0x9759BB) and the map is a placeholder

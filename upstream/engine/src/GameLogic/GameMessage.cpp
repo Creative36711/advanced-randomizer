@@ -212,5 +212,9 @@ const char *GameMessageTypeName(int type)
 	{
 		return "MSG_OPENBFME_CHEAT"; // lane CHEAT-1
 	}
+	if (type == MSG_OPENBFME_CHAOS)
+	{
+		return "MSG_OPENBFME_CHAOS"; // lane CHAOS-1
+	}
 	return "";
 }

@@ -3,6 +3,7 @@
 
 OPENBFME_LANGUAGE("de", "Deutsch", "sample")
 OPENBFME_LANGUAGE("en", "English", "source")
+OPENBFME_LANGUAGE("ru", "\320\240\321\203\321\201\321\201\320\272\320\270\320\271", "sample")
 OPENBFME_TEXT("de", "common.cancel", "", "Abbrechen")
 OPENBFME_TEXT("de", "common.close", "", "Schlie\303\237en")
 OPENBFME_TEXT("en", "common.cancel", "", "Cancel")

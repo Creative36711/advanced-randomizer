@@ -154,10 +154,13 @@ void writeGameInfo(NetByteWriter &w, const SkirmishGameInfo &g, bool warFields =
 // lane OWNERFIX-2: the eight slots' handicaps (GameSlot + 0x20) follow the profile; `slotHandicaps` false reads a GameInfo written before they existed (a
 // format 5 / 6 replay or save: every handicap 0). An announcement without the profile has none either (every handicap 0); one with the profile must carry
 // them (the LAN protocol version that carries them refuses older peers first). A handicap outside 0, -5 .. -95 (SkirmishGameSlot::handicapValid) is refused
+// lane CHAOS-1: `chaosField`: the Chaos mode's flag follows Cheat Mode, and only a chaos game writes it (0 or 1). A reader that knows the field
+// accepts it; every other game's bytes are what they were, so an old replay, save or peer reads exactly as it did
 bool readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string *error, bool profileOptionalAtEnd = false, bool slotHandicaps = true, bool cheatField = true,
-	bool warFields = false);
+	bool warFields = false, bool chaosField = true);
 void writeNewGameMessage(NetByteWriter &w, const NewGameMessage &m, bool warFields = false);
-bool readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::string *error, bool slotHandicaps = true, bool cheatField = true, bool warFields = false);
+bool readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::string *error, bool slotHandicaps = true, bool cheatField = true, bool warFields = false,
+	bool chaosField = true);
 constexpr std::size_t kMaxScenarioName = 128; ///< WOTR2 milestone 8: a longer scenario name is refused (retail sends a byte index)
 } // namespace NetPacket
 

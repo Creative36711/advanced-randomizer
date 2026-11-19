@@ -225,7 +225,8 @@ void GameLogic::xferCore(Xfer &x)
 	// Each version is written only when its state is there, so every other game's snapshot is byte-identical to version 1's (an older snapshot loads with
 	// none of the later state)
 	const bool campaignState = !m_buildableOverrides.empty() || m_campaignCarryover.has_value();
-	XferVersion v{ 1, (std::uint8_t)(x.isLoading() || m_rankLevelLimitScripted ? 5 : m_livingWorldTags.inUse() ? 4 : campaignState ? 3 : m_cheatMode.enabled() ? 2 : 1) };
+	// lane CHAOS-1: version 6 adds the Chaos mode's block (only a chaos game has it, like every version above)
+	XferVersion v{ 1, (std::uint8_t)(x.isLoading() || m_chaosMode.enabled() ? 6 : m_rankLevelLimitScripted ? 5 : m_livingWorldTags.inUse() ? 4 : campaignState ? 3 : m_cheatMode.enabled() ? 2 : 1) };
 	x.xferVersion(v);
 	x.xferUnsignedInt(&m_frame);
 	x.xferBool(&m_frameAdvance);
@@ -350,9 +351,13 @@ void GameLogic::xferCore(Xfer &x)
 			resetRankLevelLimitFromEconomy();
 		}
 	}
+	if (v.current >= 6) // lane CHAOS-1: the last block, so every earlier version's bytes are untouched
+	{
+		m_chaosMode.xfer(x);
+	}
 	else if (x.isLoading())
 	{
-		resetRankLevelLimitFromEconomy();
+		m_chaosMode = ChaosMode::State();
 	}
 }
 

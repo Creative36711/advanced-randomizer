@@ -1,0 +1,17 @@
+{
+  "@@locale": "ru",
+  "@@name": "Русский",
+  "@@status": "sample",
+  "chaos.event.armageddon": "ARMAGEDDON",
+  "chaos.event.betrayal": "BETRAYAL",
+  "chaos.event.doppelganger": "DOPPELGANGER",
+  "chaos.event.gold_rush": "GOLD RUSH",
+  "chaos.event.junk_rain": "JUNK RAIN",
+  "chaos.event.menagerie": "MENAGERIE",
+  "chaos.event.meteor": "METEOR STORM",
+  "chaos.event.quake": "EARTHQUAKE",
+  "chaos.event.second_wind": "SECOND WIND",
+  "chaos.event.silence": "SILENCE",
+  "chaos.event.swap_armies": "ARMY SWAP",
+  "chaos.event.titles": "TITLES"
+}

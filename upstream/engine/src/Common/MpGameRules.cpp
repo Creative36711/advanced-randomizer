@@ -213,6 +213,11 @@ std::u16string CheatModeRule::label()
 	return u"Cheat Mode (OpenBFME rule)";
 }
 
+std::u16string ChaosRule::label()
+{
+	return u"CHAOS: an event every 25 s (OpenBFME rule)";
+}
+
 std::u16string LegendaryHeroes::choiceText(int factor)
 {
 	if (factor <= kOff)

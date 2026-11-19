@@ -282,6 +282,7 @@ include(cmake/Uber1.cmake)      # UBER-1: the Uber performance mode (appends to 
 include(cmake/Menuwork1.cmake)  # MENUWORK-1: the menu inventory's fixes (client only; OPENBFME_MENUWORK1_SOURCES / _TESTS)
 include(cmake/Rules1.cmake)     # RULES-1: the Rules tab, the game rules, Legendary Heroes (appends to OPENBFME_SIM_SOURCES; OPENBFME_RULES1_SOURCES / _TESTS)
 include(cmake/Cheat1.cmake)        # CHEAT-1: the open Cheat Mode of custom games (appends to OPENBFME_SIM_SOURCES; OPENBFME_CHEAT1_TESTS)
+include(cmake/Chaos1.cmake)        # CHAOS-1: the Chaos mode (appends to OPENBFME_SIM_SOURCES; OPENBFME_CHAOS1_TESTS)
 include(cmake/Gamemodes1.cmake) # GAMEMODES-1: the game modes' tests (OPENBFME_GAMEMODES1_TESTS)
 include(cmake/Move3.cmake)      # MOVE-3: horde spacing, the blocked path patch (appends to OPENBFME_SIM_SOURCES; OPENBFME_MOVE3_TESTS)
 include(cmake/PathRebuild.cmake) # PATH-REBUILD: the finish of a found path, RW 0x767B0E (appends to OPENBFME_SIM_SOURCES)
@@ -869,6 +870,7 @@ add_executable(openbfme_tests
     ${OPENBFME_SDK2_TESTS}
     ${OPENBFME_RULES1_TESTS}
     ${OPENBFME_CHEAT1_TESTS}
+    ${OPENBFME_CHAOS1_TESTS}
     ${OPENBFME_MENUWORK1_TESTS}
     ${OPENBFME_GAMEMODES1_TESTS}
     ${OPENBFME_UBER1_TESTS}

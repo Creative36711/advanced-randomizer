@@ -128,3 +128,10 @@ namespace CheatModeRule
 // the Rules tab's check row and the marks of a Cheat Mode game (the game lists, the load screen, the in-game marker): English, marked as OpenBFME's
 std::u16string label();
 }
+
+// ---- OpenBFME: Chaos mode (lane CHAOS-1; not a retail rule: GameLogic/ChaosMode.h) ---------------------------------------------------------------------
+namespace ChaosRule
+{
+// the Rules tab's check row: an event every 25 seconds, for everyone, announced to everyone
+std::u16string label();
+}
