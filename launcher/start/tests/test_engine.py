@@ -903,6 +903,20 @@ class BuilderTests(TempCase):
             names = [line.split("/", 1)[1] for line in header]
             self.assertEqual(names[0], names[1], f"{patch.name}: путь --- и +++ разный")
 
+    def test_the_missing_resources_patch_survives_allow_incomplete(self) -> None:
+        # --allow-incomplete глушил причину: missing_required проверялся ДО
+        # того, как incomplete создавался, и при флаге список просто не
+        # срабатывал. Игрок видел «394 вместо 396» без единого имени — ровно
+        # это и случилось на четвёртом прогоне, хотя патч 0001 был в дереве.
+        repo = Path(__file__).resolve().parents[3]
+        patch = (repo / "patches" / "upstream"
+                 / "0002-missing-resources-are-named.patch").read_text(encoding="utf-8")
+        self.assertIn("resolved.missing_required", patch)
+        # entries/missing_patterns/count_error живут на ResolvedResource:
+        # обращение через .rule уронило бы прогон AttributeError.
+        self.assertIn("_item.entries", patch)
+        self.assertNotIn("_rule.entries", patch)
+
     def test_the_upstream_patch_names_the_resources(self) -> None:
         # Патч не лечит отказ — он НАЗЫВАЕТ причину. Если причина не из
         # манифеста, патч падает NameError прямо в прогоне игрока.
