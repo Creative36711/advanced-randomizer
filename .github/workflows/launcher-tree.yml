@@ -71,6 +71,25 @@ jobs:
           # release to point at, so the url base names this very artifact. The
           # install step below is what matters here anyway: it proves the
           # archive unpacks, not where it will later be hosted.
+          # Дерево обязано назвать свой коммит: конвертация у игрока падает на
+          # аудите происхождения без release-identity.json, а prepare.py копирует
+          # именно этот файл (git на машине игрока нет). Пишем снимок здесь, на
+          # том коммите, из которого собирается пакет.
+          python3 - <<'PY'
+          import json, os, pathlib
+          identity = {
+              "schema": "openbfme.bundled-source-identity",
+              "schemaVersion": 1,
+              "commit": os.environ["GITHUB_SHA"],
+              "sourceClean": True,
+              "ourRepository": os.environ["GITHUB_REPOSITORY"],
+              "note": "Снимок версии: коммит, из которого собран пакет дерева. "
+                      "tools/prepare.py копирует файл в дерево и не вызывает git.",
+          }
+          pathlib.Path("release-identity.json").write_text(
+              json.dumps(identity, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          print("снимок версии:", identity["commit"][:12])
+          PY
           version="${GITHUB_REF_NAME}"
           if [ "${GITHUB_REF_TYPE}" = "branch" ]; then
             url_base="artifact://tree-package"

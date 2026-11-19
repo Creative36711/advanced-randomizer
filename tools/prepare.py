@@ -1,6 +1,7 @@
 """Assemble a playable OpenBFME source tree without vendoring the port or game data."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -94,9 +95,60 @@ def main():
             print(f'  изменено файлов: {len(changed)}', flush=True)
         if (ROOT / 'game').is_dir():
             shutil.copytree(ROOT / 'game', tree / 'game', dirs_exist_ok=True)
+        stamp_release_identity(tree)
         tree.rename(dest)
     print(f'Готово: {dest}')
     print(f'Открывать в Godot 4.7.2: {dest / "game/project.godot"}')
+
+
+# Импортёр штампует происхождение конвертации в provenance-манифест и ОТКАЗЫВАЕТ,
+# если дерево не может назвать свой точный коммит: `_importer_recipe_report()`
+# ищет `release-identity.json`, а без него требует, чтобы собранное дерево само
+# было корнем git-репозитория (см. `git_revision_at_exact_root` — чужой HEAD
+# брать запрещено). У игрока git нет по правилу, поэтому дерево обязано нести
+# штамп: без него сборка пака падает на аудите
+#   "retail provenance importer recipe has no exact git commit"
+RELEASE_IDENTITY_SCHEMA = 'openbfme.bundled-source-identity'
+RELEASE_IDENTITY_SCHEMA_VERSION = 1
+#: Снимок версии этого репозитория: сюда пишется коммит, из которого собран
+#: релиз. Это ФАЙЛ, а не результат вызова git — prepare.py запускается на
+#: машине игрока, где git нет и не должно быть (тест
+#: `test_prepare_does_not_call_git` запрещает здесь внешние процессы).
+VERSION_STAMP = ROOT / 'release-identity.json'
+
+
+def stamp_release_identity(tree):
+    """Положить в дерево происхождение — из снимка версии, без вызова git.
+
+    Источник штампа — `release-identity.json` в нашем репозитории, который
+    обновляет CI при сборке пакета. Если снимка нет (сборка из рабочей копии),
+    штамп всё равно пишется, но честно помечается `sourceClean: false`:
+    импортёр в этом случае откажет, а не подпишет дерево чужими руками.
+    """
+    source = VERSION_STAMP
+    if source.is_file():
+        try:
+            identity = json.loads(source.read_text(encoding='utf-8'))
+        except (OSError, ValueError) as error:
+            raise SystemExit(f'снимок версии не читается: {source}: {error}')
+    else:
+        identity = {
+            'schema': RELEASE_IDENTITY_SCHEMA,
+            'schemaVersion': RELEASE_IDENTITY_SCHEMA_VERSION,
+            'commit': None,
+            'sourceClean': False,
+            'note': 'снимок версии отсутствовал при сборке дерева',
+        }
+    identity['upstream'] = f'Open-BFME/openbfme-godot@{REV}'
+    identity['stampedBy'] = 'tools/prepare.py'
+    (tree / 'release-identity.json').write_text(
+        json.dumps(identity, ensure_ascii=False, indent=2) + '\n', encoding='utf-8'
+    )
+    if identity.get('sourceClean') is True and identity.get('commit'):
+        print(f"  Происхождение: {str(identity['commit'])[:12]} (чистое дерево)", flush=True)
+    else:
+        print('  ВНИМАНИЕ: версия не подтверждена (нет снимка версии) — '
+              'конвертация откажет на аудите происхождения.', flush=True)
 
 
 if __name__ == '__main__':
