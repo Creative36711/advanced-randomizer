@@ -1718,3 +1718,12 @@ class ConsoleEncodingTests(unittest.TestCase):
         )
         self.assertIn("_make_output_utf8_safe", source)
         self.assertIn('errors="replace"', source)
+
+    def test_main_prepares_the_streams_too(self) -> None:
+        # The entry point alone is not enough: tests, embedders and anything
+        # importing this module call main() in a process nobody prepared.
+        source = (Path(__file__).resolve().parent.parent / "engine.py").read_text(
+            encoding="utf-8"
+        )
+        main_body = source[source.index("def main(argv") :]
+        self.assertIn("_make_output_utf8_safe()", main_body[:400])

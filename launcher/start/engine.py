@@ -1998,7 +1998,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _make_output_utf8_safe() -> None:
+    """Never let a message about a problem become a second problem.
+
+    On Windows the console code page is often cp1252, and printing the
+    engine's Russian text to it raises UnicodeEncodeError - so a player who ran
+    the engine by hand got a traceback instead of the sentence explaining what
+    went wrong. The window avoided this by exporting PYTHONUTF8, which meant
+    the bug was invisible exactly where it was most likely.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _make_output_utf8_safe()
     parser = build_parser()
     args = parser.parse_args(argv)
     settings_path = (args.settings or default_settings_path()).expanduser()
@@ -2119,23 +2137,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     parser.error("unknown command")
     return EXIT_USAGE
-
-
-def _make_output_utf8_safe() -> None:
-    """Never let a message about a problem become a second problem.
-
-    On Windows the console code page is often cp1252, and printing the
-    engine's Russian text to it raises UnicodeEncodeError - so a player who ran
-    the engine by hand got a traceback instead of the sentence explaining what
-    went wrong. The window avoided this by exporting PYTHONUTF8, which meant
-    the bug was invisible exactly where it was most likely.
-    """
-
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-        except (AttributeError, ValueError, OSError):
-            pass
 
 
 if __name__ == "__main__":
