@@ -32,7 +32,6 @@
 #pragma once
 
 #include "Common/StateHash.h"
-#include "Common/Xfer.h"
 
 #include <cstddef>
 #include <string>
@@ -42,6 +41,8 @@
 class GameLogic;
 class GameLogicDispatch;
 class GameMessage;
+class Xfer; // forward only: this header is included by GameLogic.h, which every test includes, and Xfer.h declares `class Snapshot`, a name
+            // several test files use for their own struct. The full include is in ChaosMode.cpp where xfer() is defined
 
 namespace ChaosMode
 {

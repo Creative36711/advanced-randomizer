@@ -6,6 +6,7 @@
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
 #include "Common/RandomValue.h"
+#include "Common/Xfer.h"
 #include "GameLogic/ChaosEvents.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/GameLogicDispatch.h"
