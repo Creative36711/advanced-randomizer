@@ -323,7 +323,10 @@ class ArchiveTests(TempCase):
         with zipfile.ZipFile(archive, "w") as zf:
             zf.writestr("dir/tool.exe", "binary")
         engine.extract_zip(archive, self.root / "out")
-        self.assertEqual((self.root / "out" / "dir" / "tool.exe").read_text(), "binary")
+        self.assertEqual(
+            (self.root / "out" / "dir" / "tool.exe").read_text(encoding="utf-8"),
+            "binary",
+        )
 
 
 class Recorder:
@@ -551,10 +554,35 @@ class LaneTests(TempCase):
         self.assertNotIn("convert", plan)
         self.assertLess(plan.index("layered"), plan.index("full"))
 
+        # Neither the explicit path nor the RotWK folder carries the overlay.
+        # seed_tree() also builds a "layered" folder that does, so it must be
+        # replaced as well - otherwise this asserts the wrong thing.
         settings.patch202_root = self.root / "nothing-here"
+        settings.rotwk_install = make_install(self.root / "plain-201", "rotwk")
         plan = engine.first_run_plan(settings)
         self.assertIn("convert", plan)
         self.assertNotIn("full", plan)
+        # The helper really is the thing being tested here:
+        self.assertIsNone(engine.patch202_root(settings))
+
+    def test_2_02_is_found_inside_the_201_folder(self) -> None:
+        # 2.02 is a fan mod installed by replacing files in the RotWK 2.01
+        # folder - so that folder IS the overlay. Asking for a separate path
+        # was wrong.
+        settings = self.seed_tree()
+        settings.patch202_root = None
+        modded = make_patch202(make_install(self.root / "modded-201", "rotwk"))
+        settings.rotwk_install = modded
+        self.assertEqual(engine.patch202_root(settings), modded)
+        plan = engine.first_run_plan(settings)
+        self.assertIn("full", plan)
+
+    def test_an_explicit_2_02_path_still_wins(self) -> None:
+        settings = self.seed_tree()
+        explicit = make_patch202(self.root / "elsewhere")
+        settings.patch202_root = explicit
+        settings.rotwk_install = make_install(self.root / "plain-201", "rotwk")
+        self.assertEqual(engine.patch202_root(settings), explicit)
 
     def test_without_the_overlay_the_full_step_refuses_before_any_work(self) -> None:
         settings = self.seed_tree()
@@ -1146,7 +1174,10 @@ class ProgressTests(unittest.TestCase):
             echo=lambda line: None,
             progress=progress,
         )
-        events = [json.loads(line) for line in path.read_text().splitlines()]
+        events = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+        ]
         kinds = [event["kind"] for event in events]
         self.assertEqual(kinds[0], "begin")
         self.assertEqual(kinds[-1], "end")
@@ -1163,7 +1194,10 @@ class ProgressTests(unittest.TestCase):
         progress, path, json = self.sink()
         runner = engine.Runner(echo=lambda line: None, progress=progress)
         runner.run([_sys.executable, "-c", "import time; time.sleep(0.1)"])
-        kinds = [json.loads(line)["kind"] for line in path.read_text().splitlines()]
+        kinds = [
+            json.loads(line)["kind"]
+            for line in path.read_text(encoding="utf-8").splitlines()
+        ]
         self.assertEqual(kinds, ["begin", "end"])
 
     def test_a_broken_sink_never_breaks_a_step(self) -> None:
@@ -1467,7 +1501,7 @@ class SilentDownloadTests(unittest.TestCase):
         )
         counted = [
             json.loads(line)
-            for line in events.read_text().splitlines()
+            for line in events.read_text(encoding="utf-8").splitlines()
             if json.loads(line)["kind"] == "progress"
         ]
         self.assertGreaterEqual(len(counted), 9)
@@ -1586,7 +1620,7 @@ class BytesAndEtaTests(unittest.TestCase):
         )
         rows = [
             json.loads(line)
-            for line in events.read_text().splitlines()
+            for line in events.read_text(encoding="utf-8").splitlines()
             if json.loads(line)["kind"] == "progress"
         ]
         self.assertTrue(any(row["rate"] > 0 for row in rows), "rate must be measured")
@@ -1647,3 +1681,53 @@ class ExitCodeTests(unittest.TestCase):
         # A leaked object turns the code into an array; the guard against that
         # must stay.
         self.assertIn("$Value -is [array]", window)
+
+class ConsoleEncodingTests(unittest.TestCase):
+    """Found by running the suite on real Windows, not by reading the file.
+
+    Windows consoles are often cp1252. Printing the engine's Russian text to
+    one raised UnicodeEncodeError, so a player who ran it by hand got a
+    traceback instead of the explanation. The window hid this by exporting
+    PYTHONUTF8 - the bug was invisible exactly where it was most likely.
+    """
+
+    def test_the_engine_survives_a_cp1252_console(self) -> None:
+        import os
+        import subprocess as sp
+        import sys as _sys
+
+        scratch = Path(tempfile.mkdtemp())
+        env = dict(os.environ, PYTHONIOENCODING="cp1252")
+        result = sp.run(
+            [
+                _sys.executable,
+                str(Path(__file__).resolve().parent.parent / "engine.py"),
+                "set", "--install-root", str(scratch / "root"),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("UnicodeEncodeError", result.stderr)
+        # With capture_output and a cp1252 console Python may hand back None
+        # rather than mojibake; the point of the test is that the engine does
+        # not CRASH, so the text is checked when it is there at all.
+        if result.stdout:
+            self.assertIn("Настройки сохранены", result.stdout)
+
+    def test_the_entry_point_prepares_the_streams(self) -> None:
+        source = (Path(__file__).resolve().parent.parent / "engine.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("_make_output_utf8_safe", source)
+        self.assertIn('errors="replace"', source)
+
+    def test_main_prepares_the_streams_too(self) -> None:
+        # The entry point alone is not enough: tests, embedders and anything
+        # importing this module call main() in a process nobody prepared.
+        source = (Path(__file__).resolve().parent.parent / "engine.py").read_text(
+            encoding="utf-8"
+        )
+        main_body = source[source.index("def main(argv") :]
+        self.assertIn("_make_output_utf8_safe()", main_body[:400])

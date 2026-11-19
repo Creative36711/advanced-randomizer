@@ -603,6 +603,25 @@ def has_patch202(path: Path | None) -> bool:
     return all((path / relative).is_file() for relative in PATCH202_MARKERS)
 
 
+def patch202_root(settings: "Settings") -> Path | None:
+    """Where the 2.02 overlay actually lives.
+
+    Patch 2.02 is a fan mod installed by REPLACING files inside the RotWK 2.01
+    folder - like every other mod there.  It is therefore not a separate
+    install and is never asked for: if the chosen RotWK folder carries the
+    overlay files, that folder is the overlay.  An explicit path is still
+    honoured for the rare case of a copy kept somewhere else.
+    """
+
+    if has_patch202(settings.patch202_root):
+        return settings.patch202_root
+    if has_patch202(settings.rotwk_install):
+        return settings.rotwk_install
+    # A path that was set but does not carry the files is NOT an overlay.
+    # Returning it here made "папка указана, но пуста" look like 2.02 present.
+    return None
+
+
 def candidate_folders() -> list[Path]:
     """Common retail locations, machine-derived, no developer paths."""
 
@@ -918,13 +937,25 @@ class Runner:
 
         thread = threading.Thread(target=drain_err, daemon=True)
         thread.start()
-        assert process.stdout is not None
-        for line in process.stdout:
-            line = line.rstrip("\n")
-            collected_out.append(line)
-            self.echo(line)
-        code = process.wait()
-        thread.join(timeout=5)
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                line = line.rstrip("\n")
+                collected_out.append(line)
+                self.echo(line)
+            code = process.wait()
+            thread.join(timeout=5)
+        finally:
+            # Explicit, because a leaked pipe is a real defect on Windows: it
+            # keeps the handle open and Windows refuses to delete a file the
+            # process still holds. Python's own test runner reported it as
+            # "unclosed file" the first time this ever ran on Windows.
+            for pipe in (process.stdout, process.stderr):
+                try:
+                    if pipe is not None:
+                        pipe.close()
+                except OSError:
+                    pass
         return subprocess.CompletedProcess(
             args, code, "\n".join(collected_out), "\n".join(collected_err)
         )
@@ -1533,6 +1564,39 @@ def step_layered(settings: Settings, runner: Runner, *, echo=print) -> dict:
     return {"root": str(target)}
 
 
+def last_importer_refusal(root: Path) -> str:
+    """Return the converter's own last refusal line, or an empty string.
+
+    The line is long by design - it carries the audit's error list - so it is
+    clipped to something a message box can show while keeping the beginning,
+    which is where the first mismatched file is named.
+    """
+
+    logs = root / ".launcher" / "logs"
+    if not logs.is_dir():
+        return ""
+    runs = sorted(
+        (path for path in logs.iterdir() if path.is_dir()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for run in runs:
+        log = run / "run.log"
+        if not log.is_file():
+            continue
+        try:
+            lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            if "refusal" in line or "ERROR" in line:
+                # Drop the timestamp and level columns: the player needs the
+                # sentence, not the log format.
+                text = line.split("|", 1)[-1].strip() if "|" in line else line.strip()
+                return text[:1200]
+    return ""
+
+
 def step_convert(settings: Settings, runner: Runner, *, echo=print) -> None:
     root = _install_root(settings)
     tree = _tree(settings)
@@ -1555,6 +1619,12 @@ def step_convert(settings: Settings, runner: Runner, *, echo=print) -> None:
     environment = {
         "OPENBFME_IMPORT_ROOT": str(state_root(root)),
         "PYTHONPATH": str(tree / "importer"),
+        # The converter keeps its full run log OFF by default, so the reason
+        # behind "failed its internal hash audit" - the audit's own list of
+        # mismatched files - was never written anywhere. This turns it on and
+        # points it at our own folder.
+        "OPENBFME_DIAGNOSTICS": "1",
+        "OPENBFME_LOG_DIR": str(root / ".launcher" / "logs"),
     }
     command = [str(python), *build_command(tree, settings.bfme2_install)]
     result = runner.run(command, cwd=tree, env=environment, capture=True)
@@ -1571,8 +1641,12 @@ def step_convert(settings: Settings, runner: Runner, *, echo=print) -> None:
             capture=True,
         )
     if result.returncode != 0:
+        detail = last_importer_refusal(root)
+        extra = f"\n\n{detail}" if detail else ""
         raise LauncherError(
-            f"Конвертация завершилась с кодом {result.returncode}. Смотрите лог выше.",
+            "Конвертация завершилась с кодом "
+            f"{result.returncode}.{extra}\n"
+            f"Полный лог конвертера: {root / '.launcher' / 'logs'}",
             EXIT_TOOL,
         )
     if selected_pack(root) is None:
@@ -1605,10 +1679,14 @@ def step_full_rotwk(settings: Settings, runner: Runner, *, echo=print) -> dict:
         raise LauncherError(
             "Полный контент RotWK требует папки RotWK 2.01 и BFME2 1.06.", EXIT_USAGE
         )
-    if not has_patch202(settings.patch202_root):
+    overlay = patch202_root(settings)
+    if overlay is None:
         raise LauncherError(
-            "Полный контент RotWK требует патч 2.02 v9.7.7 (папка с __patch202.big).\n"
-            "Выберите её в строке «Патч 2.02» или играйте на BFME2-контенте.",
+            "Полный контент RotWK требует патч 2.02 v9.7.7 — он ставится поверх 2.01, "
+            "заменой файлов в её папке.\n"
+            f"  В выбранной папке RotWK нет __patch202.big: {settings.rotwk_install}\n"
+            "Поставьте 2.02 в эту папку (как любой другой мод) и повторите.\n"
+            "Отдельного поля для 2.02 больше нет: он определяется по папке 2.01.",
             EXIT_USAGE,
         )
     python = venv_python(root)
@@ -1638,7 +1716,7 @@ def step_full_rotwk(settings: Settings, runner: Runner, *, echo=print) -> dict:
             "-Rotwk201Install",
             str(settings.rotwk_install),
             "-Patch202Overlay",
-            str(settings.patch202_root),
+            str(overlay),
             "-StateRoot",
             str(state),
             "-Python",
@@ -1823,7 +1901,7 @@ def first_run_plan(settings: Settings) -> list[str]:
         # With a 2.02 overlay the full RotWK lane can run; it needs the layered
         # root first.  Without it, the BFME2 Men lane is what a player can
         # actually finish today, and it needs no extra download.
-        if has_patch202(settings.patch202_root) and settings.rotwk_install:
+        if patch202_root(settings) is not None and settings.rotwk_install:
             if not marker(root, "layered"):
                 plan.append("layered")
             plan.append("full")
@@ -1932,7 +2010,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _make_output_utf8_safe() -> None:
+    """Never let a message about a problem become a second problem.
+
+    On Windows the console code page is often cp1252, and printing the
+    engine's Russian text to it raises UnicodeEncodeError - so a player who ran
+    the engine by hand got a traceback instead of the sentence explaining what
+    went wrong. The window avoided this by exporting PYTHONUTF8, which meant
+    the bug was invisible exactly where it was most likely.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _make_output_utf8_safe()
     parser = build_parser()
     args = parser.parse_args(argv)
     settings_path = (args.settings or default_settings_path()).expanduser()
@@ -2056,4 +2152,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    _make_output_utf8_safe()
     raise SystemExit(main())

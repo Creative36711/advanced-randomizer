@@ -6,3 +6,6 @@
 # Windows PowerShell 5.1 needs the .ps1 files to start with a UTF-8 BOM.
 *.cmd           text eol=crlf
 launcher/start/*.ps1 text eol=crlf
+# Subfolders too: the smoke test lives in launcher/start/tests and is run by
+# Windows PowerShell, which needs CRLF the same way the launcher does.
+launcher/start/**/*.ps1 text eol=crlf
