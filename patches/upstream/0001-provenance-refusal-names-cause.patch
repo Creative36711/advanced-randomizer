@@ -1,6 +1,6 @@
---- /tmp/pipeline.orig.py	2026-11-19 15:08:10.046778483 +0000
-+++ importer/openbfme_importer/pipeline.py	2026-11-19 15:08:42.483173831 +0000
-@@ -8085,10 +8085,27 @@
+--- a/importer/openbfme_importer/pipeline.py
++++ b/importer/openbfme_importer/pipeline.py
+@@ -8085,10 +8085,28 @@
              )
      summary["provenance_entry_count"] = len(entries)
      if profile == "men-fords-v0" and len(entries) != MEN_FORDS_SOURCE_ENTRY_COUNT:
@@ -8,6 +8,7 @@
 +        # знает, чего не хватает и что доставить. Манифест уже несёт причины
 +        # (`incomplete`, каждая с именем ресурса и текстом отказа) — называем
 +        # их здесь, вместо того чтобы заставлять читать лог целиком.
++        incomplete = manifest.get("incomplete")
 +        reasons = [
 +            item
 +            for item in (incomplete if isinstance(incomplete, list) else [])

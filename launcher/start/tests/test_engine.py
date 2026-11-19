@@ -883,6 +883,35 @@ class BuilderTests(TempCase):
         self.assertEqual(args.version, "v0.3.0-main-ab12cd34")
         self.assertEqual(args.url_tag, "v0.3.0")
 
+    def test_upstream_patches_are_applied_to_the_tree(self) -> None:
+        # patches/upstream/ раньше не применялся вовсе: сборщик брал glob
+        # только по верхнему уровню patches/. Игрок видел «394 вместо 396» без
+        # единого намёка на то, каких двух ресурсов не хватает.
+        builder = (Path(__file__).resolve().parents[3]
+                   / "tools" / "build_tree_package.py").read_text(encoding="utf-8")
+        self.assertIn("patches' / 'upstream'", builder)
+
+    def test_every_upstream_patch_addresses_the_same_path(self) -> None:
+        # apply_patch отказывает, если `---` и `+++` называют разные файлы:
+        # первый вариант этого патча был снят как diff из /tmp и падал с
+        # «переименование не поддерживается» ещё до сборки.
+        repo = Path(__file__).resolve().parents[3]
+        for patch in sorted((repo / "patches" / "upstream").glob("*.patch")):
+            lines = patch.read_text(encoding="utf-8").splitlines()
+            header = [line for line in lines if line.startswith(("--- ", "+++ "))]
+            self.assertTrue(header, f"{patch.name}: нет заголовка файла")
+            names = [line.split("/", 1)[1] for line in header]
+            self.assertEqual(names[0], names[1], f"{patch.name}: путь --- и +++ разный")
+
+    def test_the_upstream_patch_names_the_resources(self) -> None:
+        # Патч не лечит отказ — он НАЗЫВАЕТ причину. Если причина не из
+        # манифеста, патч падает NameError прямо в прогоне игрока.
+        repo = Path(__file__).resolve().parents[3]
+        patch = (repo / "patches" / "upstream"
+                 / "0001-provenance-refusal-names-cause.patch").read_text(encoding="utf-8")
+        self.assertIn('manifest.get("incomplete")', patch)
+        self.assertIn("ресурс без происхождения", patch)
+
     def test_a_source_without_our_patch_is_refused(self) -> None:
         # The builder applies patches itself; if a patch stops applying, the
         # release must not be produced at all rather than ship plain OpenBFME.
