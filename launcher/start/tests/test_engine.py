@@ -718,6 +718,45 @@ class PreviousInstallTests(TempCase):
         self.assertIn("CI", engine.FIRST_RUN_TITLES["prepare"])
 
 
+class RefusalDetailTests(TempCase):
+    """The refusal line carries the audit's file list; run.end carries nothing.
+
+    The player was shown "duration_s=399 exit_code=1" - true, and useless. The
+    converter's own `refusal` record names the files that failed the hash
+    audit, and it is written ABOVE the exit line, so reading backwards from the
+    end found the wrong line.
+    """
+
+    def _log(self, body: str) -> Path:
+        run = engine.markers_dir(self.root) / "logs" / "20261119T125042Z-converter-1"
+        run.mkdir(parents=True)
+        (run / "run.log").write_text(body, encoding="utf-8")
+        return self.root
+
+    def test_the_refusal_is_preferred_over_the_exit_line(self) -> None:
+        self._log(
+            "2026-11-19T12:57:22.101Z WARNING converter refusal what=cook "
+            "reason=built pack failed its internal hash audit "
+            "audit=['bundle_files mismatch: art/w3d/x.w3d']\n"
+            "2026-11-19T12:57:22.150Z ERROR   converter run.end exit_code=1\n"
+        )
+        text = engine.last_importer_refusal(self.root)
+        self.assertIn("bundle_files mismatch", text)
+        self.assertIn("art/w3d/x.w3d", text)
+        self.assertNotIn("exit_code=1", text)
+
+    def test_without_a_refusal_the_error_is_still_better_than_the_exit(self) -> None:
+        self._log(
+            "2026-11-19T12:57:01.000Z ERROR   converter something broke loudly\n"
+            "2026-11-19T12:57:22.150Z ERROR   converter run.end exit_code=1\n"
+        )
+        text = engine.last_importer_refusal(self.root)
+        self.assertIn("something broke loudly", text)
+
+    def test_no_log_means_no_claim(self) -> None:
+        self.assertEqual(engine.last_importer_refusal(self.root), "")
+
+
 class NoNetworkTests(unittest.TestCase):
     """Every call to step_prepare in the tests must be given an opener.
 
