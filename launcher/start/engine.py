@@ -1339,15 +1339,20 @@ def published_tree_version(opener=urllib.request.urlopen) -> str | None:
         return None
 
 
-def _tree_is_stale(install_root: Path, *, echo=print) -> bool:
+def _tree_is_stale(
+    install_root: Path, *, echo=print, opener=urllib.request.urlopen
+) -> bool:
     """Собранное дерево старше опубликованного?
 
     Сеть недоступна — считаем дерево годным: пересборка без сети всё равно
     невозможна, а отказ на ровном месте запретил бы играть офлайн.
+
+    ``opener`` обязателен именно параметром: без него проверка ходила бы в
+    сеть в тестах, где сеть подменена, и тест проверял бы не то.
     """
 
     local = tree_version(install_root)
-    published = published_tree_version()
+    published = published_tree_version(opener=opener)
     if published is None:
         return False
     if local is None:
@@ -1384,7 +1389,7 @@ def step_prepare(
         # игрок обновляет лаунчер, видит ту же ошибку и решает, что починили
         # не то. Поэтому версию дерева сверяем с опубликованным манифестом, а
         # не полагаемся на «файл на месте = всё хорошо».
-        stale = _tree_is_stale(root, echo=echo)
+        stale = _tree_is_stale(root, echo=echo, opener=opener)
         if not stale:
             echo(f"Исходники уже собраны: {tree}")
             return tree

@@ -853,6 +853,28 @@ class BuilderTests(TempCase):
         self.assertEqual(builder.safe_version("v1.2.3"), "v1.2.3")
         self.assertEqual(builder.safe_version(""), "build")
 
+    def test_a_suffixed_version_downloads_from_its_release_tag(self) -> None:
+        # Два 404 подряд, оба нашлись только сборкой манифеста:
+        #   --version main        -> url .../download/main/tree-main.zip, а такого
+        #                            релиза нет;
+        #   --version v0.3.0-main -> в путь попадали ОБА тега сразу.
+        # Поэтому версия в имени файла и тег в пути — разные вещи, и это видно
+        # в разборе аргументов, а не только в прогоне CI.
+        import importlib.util
+
+        builder_path = Path(__file__).resolve().parents[3] / "tools" / "build_tree_package.py"
+        spec = importlib.util.spec_from_file_location("build_tree_package", builder_path)
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        args = builder.build_parser().parse_args([
+            "--source", "s.zip", "--output", "out",
+            "--version", "v0.3.0-main-ab12cd34",
+            "--url-tag", "v0.3.0",
+            "--url-base", "https://example.com/releases/download",
+        ])
+        self.assertEqual(args.version, "v0.3.0-main-ab12cd34")
+        self.assertEqual(args.url_tag, "v0.3.0")
+
     def test_a_source_without_our_patch_is_refused(self) -> None:
         # The builder applies patches itself; if a patch stops applying, the
         # release must not be produced at all rather than ship plain OpenBFME.

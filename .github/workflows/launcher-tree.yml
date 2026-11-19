@@ -66,6 +66,8 @@ jobs:
 
       - name: Build the tree package
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # On a pull request GITHUB_REF_NAME is "123/merge" and there is no
           # release to point at, so the url base names this very artifact. The
@@ -96,11 +98,29 @@ jobs:
           else
             url_base="https://github.com/${GITHUB_REPOSITORY}/releases/download"
           fi
+          # На ветке версия и адрес обязаны указывать на РЕЛИЗ.
+          # Иначе манифест обещает tree-main.zip в релизе с тегом "main", а
+          # такого релиза нет: лаунчер получает 404 вместо дерева. Именно это
+          # и случилось при первой публикации из main.
+          release_tag=""
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            release_tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)
+            version="${release_tag}-main-${GITHUB_SHA:0:8}"
+            url_base="https://github.com/${GITHUB_REPOSITORY}/releases/download"
+            echo "Пакет для ${GITHUB_REF_NAME}: версия ${version}, релиз ${release_tag}"
+          fi
           set +e
+          # На ветке тег в пути скачивания — релизный, а версия в имени файла
+          # своя. Без этого в путь попадали ОБА тега сразу и получался 404.
+          url_tag=""
+          if [ -n "${release_tag}" ]; then
+            url_tag="$release_tag"
+          fi
           python3 tools/build_tree_package.py \
             --source source.zip \
             --output dist/tree \
             --version "$version" \
+            ${url_tag:+--url-tag "$url_tag"} \
             --url-base "$url_base" 2>&1 | tee build.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
