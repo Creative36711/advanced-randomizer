@@ -190,6 +190,23 @@ class StatusTests(TempCase):
         self.assertIn("installRoot", json.dumps(report))
         self.assertTrue(report["notes"])
 
+    def test_a_patch_202_inside_the_rotwk_folder_is_seen(self) -> None:
+        # 2.02 ставят модом ПОВЕРХ 2.01, заменяя файлы в её папке, поэтому
+        # отдельного пути обычно нет. status смотрел только на
+        # settings.patch202_root и показывал «нет 2.02» при честно стоящем
+        # патче — окно уводило игрока в ветку BFME2 вместо RotWK.
+        rotwk = self.root / "RotWK"
+        rotwk.mkdir(parents=True)
+        for relative in engine.PATCH202_MARKERS:
+            path = rotwk / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x")
+        report = engine.status(
+            engine.Settings(install_root=self.root / "launcher", rotwk_install=rotwk)
+        )
+        self.assertTrue(report["patch202"])
+        self.assertEqual(report["patch202Root"], str(rotwk))
+
     def test_ready_only_when_tree_engine_and_pack_all_exist(self) -> None:
         make_source(self.root)
         report = engine.status(engine.Settings(install_root=self.root))
