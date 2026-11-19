@@ -1672,3 +1672,40 @@ class ExitCodeTests(unittest.TestCase):
         # A leaked object turns the code into an array; the guard against that
         # must stay.
         self.assertIn("$Value -is [array]", window)
+
+class ConsoleEncodingTests(unittest.TestCase):
+    """Found by running the suite on real Windows, not by reading the file.
+
+    Windows consoles are often cp1252. Printing the engine's Russian text to
+    one raised UnicodeEncodeError, so a player who ran it by hand got a
+    traceback instead of the explanation. The window hid this by exporting
+    PYTHONUTF8 - the bug was invisible exactly where it was most likely.
+    """
+
+    def test_the_engine_survives_a_cp1252_console(self) -> None:
+        import os
+        import subprocess as sp
+        import sys as _sys
+
+        scratch = Path(tempfile.mkdtemp())
+        env = dict(os.environ, PYTHONIOENCODING="cp1252")
+        result = sp.run(
+            [
+                _sys.executable,
+                str(Path(__file__).resolve().parent.parent / "engine.py"),
+                "set", "--install-root", str(scratch / "root"),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("UnicodeEncodeError", result.stderr)
+        self.assertIn("Настройки сохранены", result.stdout)
+
+    def test_the_entry_point_prepares_the_streams(self) -> None:
+        source = (Path(__file__).resolve().parent.parent / "engine.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("_make_output_utf8_safe", source)
+        self.assertIn('errors="replace"', source)
