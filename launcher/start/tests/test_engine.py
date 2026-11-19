@@ -110,6 +110,14 @@ class TempCase(unittest.TestCase):
         self._temp = tempfile.TemporaryDirectory()
         self.addCleanup(self._temp.cleanup)
         self.root = Path(self._temp.name)
+        # Настоящая сеть в тестах — это либо ожидание таймаута, либо проверка
+        # не того, что задумано. Проверка свежести дерева спрашивает манифест
+        # у GitHub, поэтому по умолчанию считаем, что сети нет: без неё дерево
+        # признаётся годным, и план не меняется. Тесты, которым нужна
+        # опубликованная версия, подменяют эту функцию сами.
+        original = engine.published_tree_version
+        engine.published_tree_version = lambda opener=None: None
+        self.addCleanup(setattr, engine, "published_tree_version", original)
 
 
 class SettingsTests(TempCase):
