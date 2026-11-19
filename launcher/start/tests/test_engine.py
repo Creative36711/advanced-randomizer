@@ -15,10 +15,12 @@ from __future__ import annotations
 import io
 import json
 import os
+import hashlib
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+import urllib.error
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -59,11 +61,26 @@ def make_patch202(root: Path) -> Path:
 
 
 def make_source(root: Path) -> Path:
+    """A tree that passes the same checks as a real one: the game AND our mod.
+
+    A tree with only ``game/project.godot`` is plain OpenBFME; ``source_ready``
+    must refuse it, so tests that need a usable tree have to make the mod too.
+    """
+
+    import tree_package
+
     tree = engine.source_tree(root)
     (tree / "game").mkdir(parents=True, exist_ok=True)
     (tree / "game" / "project.godot").write_text("[application]\n", encoding="utf-8")
     (tree / "tools").mkdir(parents=True, exist_ok=True)
     (tree / "tools" / "openbfme_import.py").write_text("", encoding="utf-8")
+    for name in tree_package.MOD_FILES:
+        path = tree / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# тест\n", encoding="utf-8")
+    evidence = tree / tree_package.PATCH_EVIDENCE[0]
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_text(tree_package.PATCH_EVIDENCE[1] + " = {}\n", encoding="utf-8")
     return tree
 
 
@@ -478,6 +495,231 @@ class PrepareTests(TempCase):
         recorder = Recorder()
         engine.step_prepare(engine.Settings(install_root=self.root), recorder, echo=lambda _l: None)
         self.assertEqual(recorder.commands, [])
+
+
+class TreePackageTests(unittest.TestCase):
+    """The published tree: what a player downloads instead of assembling it here."""
+
+    def test_a_manifest_without_a_digest_is_refused(self) -> None:
+        import tree_package
+
+        with self.assertRaises(tree_package.TreeError) as caught:
+            tree_package.read_manifest('{"url": "https://example.com/a.zip", "size": 10}')
+        self.assertIn("sha256", str(caught.exception))
+
+    def test_a_manifest_over_plain_http_is_refused(self) -> None:
+        # The digest cannot protect a download that a network can replace.
+        import tree_package
+
+        text = json.dumps(
+            {"url": "http://example.com/a.zip", "sha256": "a" * 64, "size": 1, "version": "v1"}
+        )
+        with self.assertRaises(tree_package.TreeError) as caught:
+            tree_package.read_manifest(text)
+        self.assertIn("https", str(caught.exception))
+
+    def test_a_truncated_archive_is_named_not_unpacked(self) -> None:
+        import tree_package
+
+        with tempfile.TemporaryDirectory() as scratch:
+            archive = Path(scratch) / "tree.zip"
+            archive.write_bytes(b"not a zip")
+            package = tree_package.TreePackage(
+                url="https://example.com/a.zip", sha256="a" * 64, size=999, version="v1"
+            )
+            with self.assertRaises(tree_package.TreeError) as caught:
+                tree_package.verify_file(archive, package)
+            self.assertIn("размер", str(caught.exception))
+
+    def test_an_entry_that_escapes_the_folder_is_refused(self) -> None:
+        # A zip entry named ../x is the one way a package writes outside the
+        # launcher folder.
+        import tree_package
+
+        with tempfile.TemporaryDirectory() as scratch:
+            archive = Path(scratch) / "evil.zip"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("openbfme/../escaped.txt", "x")
+            with self.assertRaises(tree_package.TreeError) as caught:
+                tree_package.unpack(archive, Path(scratch) / "tree")
+            self.assertIn("вне папки", str(caught.exception))
+            self.assertFalse((Path(scratch) / "escaped.txt").exists())
+
+    def test_a_good_archive_lands_exactly_where_the_engine_expects(self) -> None:
+        import tree_package
+
+        with tempfile.TemporaryDirectory() as scratch:
+            archive = Path(scratch) / "good.zip"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("openbfme/game/project.godot", "[application]\n")
+                zf.writestr("openbfme/tools/openbfme_import.py", "")
+            destination = Path(scratch) / "tree"
+            tree_package.unpack(archive, destination)
+            self.assertTrue((destination / "game" / "project.godot").is_file())
+            # A second unpack must not leave files from the first one behind.
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("openbfme/game/project.godot", "[application]\n")
+            tree_package.unpack(archive, destination)
+            self.assertFalse((destination / "tools").exists())
+
+
+class PlainOpenBFMEGuardTests(TempCase):
+    """A tree without our mod looks ready and plays a game without the randomizer."""
+
+    def test_a_tree_with_only_the_game_is_not_ready(self) -> None:
+        tree = engine.source_tree(self.root)
+        (tree / "game").mkdir(parents=True)
+        (tree / "game" / "project.godot").write_text("[application]\n", encoding="utf-8")
+        (tree / "tools").mkdir(parents=True)
+        (tree / "tools" / "openbfme_import.py").write_text("", encoding="utf-8")
+        self.assertFalse(engine.source_ready(self.root))
+
+    def test_a_tree_whose_patch_did_not_apply_is_not_ready(self) -> None:
+        # Exactly the failure mode of copying game/ one level too deep: the mod
+        # files land in game/game/... and the game starts as plain OpenBFME.
+        import tree_package
+
+        tree = make_source(self.root)
+        (tree / tree_package.PATCH_EVIDENCE[0]).write_text(
+            "var retail_sources := {}\n", encoding="utf-8"
+        )
+        problems = tree_package.mod_problems(tree)
+        self.assertTrue(any("без нашей правки" in p for p in problems), problems)
+        self.assertFalse(engine.source_ready(self.root))
+
+    def test_a_tree_missing_one_mod_file_names_it(self) -> None:
+        import tree_package
+
+        tree = make_source(self.root)
+        (tree / tree_package.MOD_FILES[1]).unlink()
+        problems = tree_package.mod_problems(tree)
+        self.assertEqual(problems, [tree_package.MOD_FILES[1]])
+
+
+class BuilderTests(TempCase):
+    """tools/build_tree_package.py: the archive CI publishes must be installable."""
+
+    def test_the_built_archive_is_deterministic(self) -> None:
+        # Same commit twice must produce the same digest, or a rebuilt release
+        # cannot be compared with the one players already have.  The property
+        # lives in write_zip, so it is tested there and not through a rebuild.
+        import importlib.util
+
+        builder_path = Path(__file__).resolve().parents[3] / "tools" / "build_tree_package.py"
+        spec = importlib.util.spec_from_file_location("build_tree_package", builder_path)
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        tree = Path(self.root) / "tree"
+        (tree / "game").mkdir(parents=True)
+        (tree / "game" / "project.godot").write_text("[application]\n", encoding="utf-8")
+        (tree / "b.txt").write_text("second\n", encoding="utf-8")
+        (tree / "a.txt").write_text("first\n", encoding="utf-8")
+        first = Path(self.root) / "one.zip"
+        second = Path(self.root) / "two.zip"
+        builder.write_zip(tree, first)
+        # Touched in between: mtimes must not leak into the archive.
+        (tree / "a.txt").write_text("first\n", encoding="utf-8")
+        builder.write_zip(tree, second)
+        self.assertEqual(
+            hashlib.sha256(first.read_bytes()).hexdigest(),
+            hashlib.sha256(second.read_bytes()).hexdigest(),
+        )
+
+    def test_a_source_without_our_patch_is_refused(self) -> None:
+        # The builder applies patches itself; if a patch stops applying, the
+        # release must not be produced at all rather than ship plain OpenBFME.
+        import subprocess
+
+        builder = Path(__file__).resolve().parents[3] / "tools" / "build_tree_package.py"
+        source = Path(self.root) / "src.zip"
+        with zipfile.ZipFile(source, "w") as zf:
+            zf.writestr("openbfme/game/project.godot", "[application]\n")
+        result = subprocess.run(
+            [sys.executable, str(builder), "--source", str(source),
+             "--output", str(Path(self.root) / "out"), "--version", "v-test"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((Path(self.root) / "out" / "tree.json").exists())
+
+
+class TreeStepTests(TempCase):
+    """step_prepare must use the published tree, and fall back honestly."""
+
+    def _archive(self) -> tuple[Path, bytes]:
+        import tree_package
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zf:
+            zf.writestr("openbfme/game/project.godot", "[application]\n")
+            zf.writestr("openbfme/tools/openbfme_import.py", "")
+            for name in tree_package.MOD_FILES:
+                zf.writestr("openbfme/" + name, "# мод\n")
+            zf.writestr(
+                "openbfme/" + tree_package.PATCH_EVIDENCE[0],
+                tree_package.PATCH_EVIDENCE[1] + " = {}\n",
+            )
+        return Path(self.root) / "good.zip", buffer.getvalue()
+
+    def test_the_published_tree_is_installed_without_building_anything(self) -> None:
+        import hashlib
+        import tree_package
+
+        archive, payload = self._archive()
+        archive.write_bytes(payload)
+        manifest = json.dumps(
+            {
+                "url": "https://example.com/tree.zip",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "size": len(payload),
+                "version": "v9.9.9",
+            }
+        ).encode()
+
+        class Opener:
+            def __init__(self) -> None:
+                self.urls: list[str] = []
+
+            def __call__(self, request, timeout=None):
+                self.urls.append(request.full_url)
+                if request.full_url.endswith(tree_package.MANIFEST_NAME):
+                    return FakeResponse(manifest)
+                return FakeResponse(payload)
+
+        opener = Opener()
+        recorder = Recorder()
+        tree = engine.step_prepare(
+            engine.Settings(install_root=self.root),
+            recorder,
+            echo=lambda _l: None,
+            opener=opener,
+            progress=None,
+        )
+        self.assertTrue((tree / "game" / "project.godot").is_file())
+        self.assertTrue(engine.source_ready(self.root))
+        # Nothing was run: no prepare.py, no python, nothing.
+        self.assertEqual(recorder.commands, [])
+        self.assertTrue(engine.marker(self.root, "assembled"))
+
+    def test_a_release_that_is_not_there_falls_back_to_building_here(self) -> None:
+        class Down:
+            def __call__(self, request, timeout=None):
+                raise urllib.error.URLError(OSError(104, "Connection reset by peer"))
+
+        lines: list[str] = []
+        # The fallback runs prepare.py, which is not exercised here: the point
+        # is that the failure is explained and the player is not abandoned.
+        with self.assertRaises(engine.LauncherError):
+            engine.step_prepare(
+                engine.Settings(install_root=self.root),
+                Recorder(),
+                echo=lines.append,
+                opener=Down(),
+                progress=None,
+            )
+        said = "\n".join(lines)
+        self.assertIn("Готовый архив дерева получить не удалось", said)
+        self.assertIn("Собираю дерево на этом компьютере", said)
 
 
 class LaunchTests(TempCase):
