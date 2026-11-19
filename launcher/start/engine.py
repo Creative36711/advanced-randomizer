@@ -937,13 +937,25 @@ class Runner:
 
         thread = threading.Thread(target=drain_err, daemon=True)
         thread.start()
-        assert process.stdout is not None
-        for line in process.stdout:
-            line = line.rstrip("\n")
-            collected_out.append(line)
-            self.echo(line)
-        code = process.wait()
-        thread.join(timeout=5)
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                line = line.rstrip("\n")
+                collected_out.append(line)
+                self.echo(line)
+            code = process.wait()
+            thread.join(timeout=5)
+        finally:
+            # Explicit, because a leaked pipe is a real defect on Windows: it
+            # keeps the handle open and Windows refuses to delete a file the
+            # process still holds. Python's own test runner reported it as
+            # "unclosed file" the first time this ever ran on Windows.
+            for pipe in (process.stdout, process.stderr):
+                try:
+                    if pipe is not None:
+                        pipe.close()
+                except OSError:
+                    pass
         return subprocess.CompletedProcess(
             args, code, "\n".join(collected_out), "\n".join(collected_err)
         )
