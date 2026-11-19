@@ -56,6 +56,13 @@ def assemble(source: Path, destination: Path) -> None:
     tree = trees[0]
     for patch in sorted((ROOT / 'patches').glob('*.patch')):
         apply_patch.apply_patch_file(patch, tree)
+    # patches/upstream/ — отказы, которые игрок читает глазами. Патч не лечит
+    # отказ, он НАЗЫВАЕТ ресурсы: без него в логе «394 вместо 396» и ни слова
+    # о том, чего не хватает. Отдельная папка не случайно: раньше она не
+    # применялась вовсе (glob только по верхнему уровню), и улучшение текста
+    # ни разу не доехало до игрока.
+    for patch in sorted((ROOT / 'patches' / 'upstream').glob('*.patch')):
+        apply_patch.apply_patch_file(patch, tree)
     # dirs_exist_ok merges our files INTO game/: the mod is a set of new files
     # plus edits already made by the patch, not a replacement of the folder.
     import shutil
