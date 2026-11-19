@@ -18,6 +18,12 @@ on:
     paths:
       - "launcher/build/**"
       - "launcher/start/**"
+      # The tree job lives here and reads tools/, patches/ and game/: a change
+      # to any of them must build the package, or a broken release is found by
+      # a player instead of here.
+      - "tools/**"
+      - "patches/**"
+      - "game/**"
       - ".github/workflows/launcher-release.yml"
     tags: ["v*"]
   workflow_dispatch:

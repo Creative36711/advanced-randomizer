@@ -1,0 +1,168 @@
+name: Tree package
+
+# Builds the archive a player's launcher downloads instead of assembling the
+# game on their own machine: OpenBFME sources pinned in tools/prepare.py, our
+# patches/*.patch and our game/ — once, here, from one commit.
+#
+# It runs on pull requests too: this job produces the file every first run
+# depends on, so a broken package must be found before the merge and never by
+# a player.  `main` and release tags also attach it to the release, where
+# latest/download/tree.json points.
+#
+# Failures print their reason as an ::error:: annotation: this job exists to be
+# read from a checks API, where the log host is not always reachable.
+on:
+  push:
+    branches: [main]
+    paths: &paths
+      - "tools/**"
+      - "patches/**"
+      - "game/**"
+      - "launcher/start/tree_package.py"
+      - ".github/workflows/launcher-tree.yml"
+    tags: ["v*"]
+  pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tree:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download the pinned OpenBFME sources
+        shell: bash
+        run: |
+          # The pin lives in tools/prepare.py; asking it keeps one source of
+          # truth instead of a second copy of the hash in this file.
+          python3 - <<'PY'
+          import pathlib, re
+          text = pathlib.Path("tools/prepare.py").read_text(encoding="utf-8")
+          # The URL is an f-string template: REV has to be substituted, or the
+          # literal {REV} goes to GitHub and comes back 404.
+          rev = re.search(r"^REV = '([0-9a-f]{40})'", text, re.M).group(1)
+          url = re.search(r"^URL = f?'([^']+)'", text, re.M).group(1).replace("{REV}", rev)
+          pathlib.Path("url.txt").write_text(url, encoding="utf-8")
+          PY
+          url=$(cat url.txt); rm url.txt
+          echo "downloading $url"
+          curl -sSL --retry 3 --fail -o source.zip "$url"
+          python3 - <<'PY'
+          import hashlib, pathlib, re
+          text = pathlib.Path("tools/prepare.py").read_text(encoding="utf-8")
+          want = re.search(r"^SHA256 = '([0-9a-f]{64})'", text, re.M).group(1)
+          got = hashlib.sha256(pathlib.Path("source.zip").read_bytes()).hexdigest()
+          print("want", want); print("got ", got)
+          raise SystemExit(0 if want == got else "pinned source digest mismatch")
+          PY
+
+      - name: Build the tree package
+        shell: bash
+        run: |
+          # On a pull request GITHUB_REF_NAME is "123/merge" and there is no
+          # release to point at, so the url base names this very artifact. The
+          # install step below is what matters here anyway: it proves the
+          # archive unpacks, not where it will later be hosted.
+          version="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_TYPE}" = "branch" ]; then
+            url_base="artifact://tree-package"
+          else
+            url_base="https://github.com/${GITHUB_REPOSITORY}/releases/download"
+          fi
+          set +e
+          python3 tools/build_tree_package.py \
+            --source source.zip \
+            --output dist/tree \
+            --version "$version" \
+            --url-base "$url_base" 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            tail -c 1500 build.log | sed 's/$/%0A/' | tr -d '\n' > reason.txt
+            echo "::error title=Tree package build failed::$(cat reason.txt)"
+            exit 1
+          fi
+          ls -l dist/tree
+
+      - name: Install the package the way the launcher does
+        # A package that builds but cannot be installed is the failure that
+        # reaches a player, so the test uses the launcher's own code path.
+        shell: bash
+        run: |
+          cat > install.py <<'PY'
+          import io, json, sys, traceback
+          from pathlib import Path
+          sys.path.insert(0, "launcher/start")
+          import engine, tree_package
+
+          manifest = Path("dist/tree/tree.json").read_text(encoding="utf-8")
+          payload = Path("dist/tree/" + json.loads(manifest)["url"].rsplit("/", 1)[1]).read_bytes()
+          player = Path("player")
+
+          class Response:
+              def __init__(self, data):
+                  self._stream = io.BytesIO(data)
+                  self.headers = {"Content-Length": str(len(data))}
+              def read(self, n=-1):
+                  return self._stream.read(n)
+              def __enter__(self):
+                  return self
+              def __exit__(self, *info):
+                  return None
+
+          def opener(request, timeout=None):
+              # Any address works here: the manifest and the archive are already
+              # in hand, and the point is the install path, not the hosting.
+              return Response(manifest.encode() if request.full_url.endswith("tree.json") else payload)
+
+          try:
+              lines = []
+              tree = engine.step_prepare(
+                  engine.Settings(install_root=player), engine.Runner(),
+                  echo=lines.append, opener=opener, progress=None,
+              )
+              print("\n".join(lines))
+              problems = tree_package.mod_problems(tree)
+              if problems:
+                  raise SystemExit("пакет без мода: " + ", ".join(problems))
+              if not engine.source_ready(player):
+                  raise SystemExit("после установки дерево не готово")
+              print("установка пакета: ок")
+          except BaseException:
+              traceback.print_exc()
+              raise
+          PY
+          set +e
+          python3 install.py 2>&1 | tee install.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            tail -c 1500 install.log | sed 's/$/%0A/' | tr -d '\n' > reason.txt
+            echo "::error title=Installing the tree package failed::$(cat reason.txt)"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tree-package
+          path: |
+            dist/tree/tree.json
+            dist/tree/tree-*.zip
+
+      - name: Attach the tree to the release
+        # latest/download/tree.json is what the launcher reads, so the tree must
+        # be attached to the same release the rest of the download comes from.
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --generate-notes
+          gh release upload "$tag" dist/tree/tree.json dist/tree/tree-*.zip --clobber

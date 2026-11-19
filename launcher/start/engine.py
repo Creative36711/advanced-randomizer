@@ -43,6 +43,7 @@ import time
 import urllib.request
 import zipfile
 
+import tree_package
 from pinned import (
     CONTENT_PACKS_RELATIVE,
     SEVEN_ZR,
@@ -455,7 +456,7 @@ def extract_zip(archive: Path, destination: Path, *, label: str = "") -> None:
     with zipfile.ZipFile(archive) as zf:
         for info in zf.infolist():
             target = (destination / info.filename).resolve()
-            if not str(target).startswith(str(root)):
+            if not tree_package.inside(root, target):
                 raise LauncherError(
                     f"{label or archive.name}: архив пытается писать вне папки назначения."
                 )
@@ -500,7 +501,7 @@ def extract_7z(archive: Path, destination: Path, *, label: str = "", echo=print)
             names = archive_file.getnames()
             for name in names:
                 target = (destination / name).resolve()
-                if not str(target).startswith(str(destination.resolve())):
+                if not tree_package.inside(destination, target):
                     raise LauncherError(
                         f"{label}: архив пытается писать вне папки назначения."
                     )
@@ -556,7 +557,7 @@ def extract_tar_gz(archive: Path, destination: Path, *, label: str = "") -> None
     with tarfile.open(archive, "r:gz") as tf:
         for member in tf.getmembers():
             target = (destination / member.name).resolve()
-            if not str(target).startswith(str(root)):
+            if not tree_package.inside(root, target):
                 raise LauncherError(
                     f"{label or archive.name}: архив пытается писать вне папки назначения."
                 )
@@ -689,10 +690,19 @@ def detect_installs() -> tuple[Path | None, Path | None, Path | None]:
 
 
 def source_ready(install_root: Path) -> bool:
+    """The tree is complete AND is Advanced Randomizer, not plain OpenBFME.
+
+    A package built from the wrong commit, or with our ``game/`` folder copied
+    one level too deep, passes every structural check and still starts a game
+    without the mod - which reads as "the randomizer does nothing".
+    """
+
     tree = source_tree(install_root)
-    return (tree / "game" / "project.godot").is_file() and (
-        tree / "tools" / "openbfme_import.py"
-    ).is_file()
+    if not (tree / "game" / "project.godot").is_file():
+        return False
+    if not (tree / "tools" / "openbfme_import.py").is_file():
+        return False
+    return not tree_package.mod_problems(tree)
 
 
 def selected_pack(install_root: Path) -> dict | None:
@@ -1242,7 +1252,116 @@ def _tree(settings: Settings) -> Path:
     return tree
 
 
-def step_prepare(settings: Settings, runner: Runner, *, echo=print) -> Path:
+def tree_manifest_url() -> str:
+    """Where the assembled tree is published: our own repository, latest-release tag."""
+
+    return (
+        "https://github.com/Creative36711/advanced-randomizer/releases/latest/download/"
+        + tree_package.MANIFEST_NAME
+    )
+
+
+def step_prepare(
+    settings: Settings,
+    runner: Runner,
+    *,
+    echo=print,
+    opener=urllib.request.urlopen,
+    progress=None,
+) -> Path:
+    """Get the game tree: the published package first, local assembly as fallback.
+
+    Assembling locally means downloading 17 MB of OpenBFME sources on EVERY
+    install, applying the patch and copying our game folder. The same tree is
+    built once in CI from the same commit, so a player downloads it ready-made
+    and the local path is only a fallback for a build that has no release yet.
+    """
+
+    root = _install_root(settings)
+    tree = source_tree(root)
+    if source_ready(root):
+        echo(f"Исходники уже собраны: {tree}")
+        return tree
+    try:
+        return install_tree_package(
+            settings, echo=echo, opener=opener, progress=progress
+        )
+    except (tree_package.TreeError, DownloadError) as error:
+        echo("")
+        echo("Готовый архив дерева получить не удалось:")
+        for line in str(error).splitlines():
+            echo("  " + line)
+        echo("")
+        echo("Собираю дерево на этом компьютере — это дольше, но работает "
+             "без готового релиза.")
+    return assemble_tree_locally(settings, runner, echo=echo)
+
+
+def install_tree_package(
+    settings: Settings, *, echo=print, opener=urllib.request.urlopen, progress=None
+) -> Path:
+    """Download, verify and unpack the assembled tree (the normal first run)."""
+
+    root = _install_root(settings)
+    tree = source_tree(root)
+    manifest_path = downloads_dir(root) / tree_package.MANIFEST_NAME
+    url = tree_manifest_url()
+    # The manifest is tiny and carries the digest of everything else, so it is
+    # fetched fresh every time; a stale copy would pin an old tree forever.
+    echo(f"Читаю список файлов: {url}")
+    try:
+        with opener(
+            urllib.request.Request(url, headers={"User-Agent": "AdvancedRandomizer/1.0"}),
+            timeout=60,
+        ) as response:
+            text = response.read(1 << 20).decode("utf-8", "replace")
+    except (urllib.error.URLError, OSError, TimeoutError) as error:
+        raise DownloadError(f"{url}: не удалось прочитать список файлов ({error})")
+    package = tree_package.read_manifest(text, source=url)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(text, encoding="utf-8")
+    archive = downloads_dir(root) / f"tree-{package.version}.zip"
+    if archive.is_file():
+        try:
+            tree_package.verify_file(archive, package)
+            echo(f"Архив уже скачан и совпал с манифестом: {archive.name}")
+        except tree_package.TreeError:
+            archive.unlink(missing_ok=True)
+    if not archive.is_file():
+        download(
+            package.url,
+            archive,
+            expected_sha256=package.sha256,
+            expected_size=package.size,
+            label=f"дерево игры {package.version}",
+            echo=echo,
+            opener=opener,
+            progress=progress,
+        )
+    echo("Распаковываю…")
+    root.mkdir(parents=True, exist_ok=True)
+    tree_package.unpack(archive, tree)
+    problems = tree_package.mod_problems(tree)
+    if problems or not (tree / "game" / "project.godot").is_file():
+        missing = problems or ["game/project.godot"]
+        raise tree_package.TreeError(
+            "архив распакован, но это не Advanced Randomizer. Не хватает:\n  "
+            + "\n  ".join(missing)
+            + "\nСкорее всего, релиз собран из другого коммита. "
+            "Напишите об этом — сборку надо переделать."
+        )
+    mark(root, "assembled", package.version)
+    (tree / ".launcher-assembled").write_text(
+        f"Собрано CI Advanced Randomizer, версия {package.version}.\n",
+        encoding="utf-8",
+    )
+    echo(f"Дерево готово: {tree} ({package.version})")
+    return tree
+
+
+def assemble_tree_locally(settings: Settings, runner: Runner, *, echo=print) -> Path:
+    """The old path: pin, patch and copy by hand. Used when no release exists."""
+
     root = _install_root(settings)
     tree = source_tree(root)
     if source_ready(root):
