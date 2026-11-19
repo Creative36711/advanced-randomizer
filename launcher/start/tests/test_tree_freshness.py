@@ -102,6 +102,50 @@ class TreeFreshnessTests(unittest.TestCase):
         self.assertFalse(engine._tree_is_stale(self.root, echo=lambda _l: None))
 
 
+class PlanTests(unittest.TestCase):
+    """Причина, по которой фикс не доходил до игрока.
+
+    first_run_plan добавлял prepare только если дерева НЕ БЫЛО. У игрока с
+    готовым (но старым) деревом шаг выбрасывался, step_prepare не вызывался,
+    и сверка версий не выполнялась никогда — сколько бы раз он ни запускал.
+    """
+
+    def setUp(self):
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        make_source(self.root)
+        (engine.source_tree(self.root) / '.launcher-assembled').write_text(
+            'v0.3.0\n', encoding='utf-8')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _plan(self):
+        settings = engine.Settings(install_root=self.root)
+        settings.bfme2_install = self.root / 'bfme2'
+        return engine.first_run_plan(settings)
+
+    def _published(self, version):
+        original = engine.published_tree_version
+        engine.published_tree_version = lambda opener=None: version
+        self.addCleanup(setattr, engine, 'published_tree_version', original)
+
+    def test_a_stale_tree_still_gets_the_prepare_step(self):
+        self._published('v0.4.0')
+        self.assertIn('prepare', self._plan(),
+                      'игрок с устаревшим деревом обязан получить обновление')
+
+    def test_a_current_tree_skips_the_prepare_step(self):
+        self._published('v0.3.0')
+        self.assertNotIn('prepare', self._plan())
+
+    def test_without_network_the_plan_is_unchanged(self):
+        self._published(None)
+        self.assertNotIn('prepare', self._plan())
+
+
 class PublishedVersionTests(unittest.TestCase):
     def test_reads_the_version_from_the_manifest(self):
         self.assertEqual(

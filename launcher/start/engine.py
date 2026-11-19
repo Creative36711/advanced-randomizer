@@ -2126,7 +2126,13 @@ def first_run_plan(settings: Settings) -> list[str]:
     plan: list[str] = []
     if not pinned_python(root).is_file():
         plan.append("python")
-    if not source_ready(root):
+    # Дерево на месте — ещё не значит «годное». Проверка свежести живёт в
+    # step_prepare, а сюда шаг попадал только когда дерева не было вовсе:
+    # у игрока с готовым деревом prepare не вызывался НИКОГДА, поэтому сверка
+    # версий не выполнялась, и он снова и снова конвертировал старое дерево.
+    # Сеть тут читается один раз (манифест крошечный), а при её отсутствии
+    # дерево считается годным — играть офлайн можно.
+    if not source_ready(root) or _tree_is_stale(root):
         plan.append("prepare")
     if not venv_python(root).is_file():
         plan.append("venv")
