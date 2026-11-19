@@ -903,6 +903,27 @@ class BuilderTests(TempCase):
             names = [line.split("/", 1)[1] for line in header]
             self.assertEqual(names[0], names[1], f"{patch.name}: путь --- и +++ разный")
 
+    def test_the_shortfall_patch_names_the_rule(self) -> None:
+        # «found 394» не говорило, ЧЕГО не хватает. Патч 0003 считает записи
+        # по правилам и печатает недостачу по имени.
+        repo = Path(__file__).resolve().parents[3]
+        patch = (repo / "patches" / "upstream"
+                 / "0003-shortfall-names-the-rule.patch").read_text(encoding="utf-8")
+        self.assertIn("не хватает", patch)
+        self.assertIn("resource_id", patch)
+        # limit — потолок, а не ожидание: ожидание даёт expected_count, а без
+        # него — число паттернов. Иначе выходит «не хватает 202 из 256».
+        self.assertIn("len(_rule.patterns)", patch)
+        self.assertNotIn("_rule.limit or 0", patch)
+
+    def test_a_failed_diagnosis_says_so(self) -> None:
+        # Ровно это молчание стоило игроку пяти прогонов: except Exception
+        # проглотил причину, и в логе не появилось ни строчки.
+        repo = Path(__file__).resolve().parents[3]
+        patch = (repo / "patches" / "upstream"
+                 / "0003-shortfall-names-the-rule.patch").read_text(encoding="utf-8")
+        self.assertIn("причины не удалось разобрать", patch)
+
     def test_the_missing_resources_patch_survives_allow_incomplete(self) -> None:
         # --allow-incomplete глушил причину: missing_required проверялся ДО
         # того, как incomplete создавался, и при флаге список просто не
