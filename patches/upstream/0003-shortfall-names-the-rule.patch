@@ -1,0 +1,50 @@
+--- a/importer/openbfme_importer/pipeline.py
++++ b/importer/openbfme_importer/pipeline.py
+@@ -8125,6 +8125,39 @@
+                 errors.append(
+                     "  ресурс без происхождения: "
+                     f"{item.get('resource', '?')} — {item.get('reason', 'причина не указана')}"
+                 )
+             if len(reasons) > 12:
+                 errors.append(f"  и ещё {len(reasons) - 12} ресурсов без происхождения")
++        # «found 394» не говорит, ЧЕГО не хватает. Сравниваем с профилем: он
++        # объявляет, сколько записей даёт каждое правило, и сумма известна до
++        # конвертации. Так недостача называется правилом, а не числом.
++        _per_rule: dict[str, int] = {}
++        for _entry in entries:
++            if isinstance(_entry, dict):
++                _rid = str(_entry.get("resource_id", ""))
++                _per_rule[_rid] = _per_rule.get(_rid, 0) + 1
++        try:
++            from .cli import PROFILES_ROOT
++            from .profile import ImportProfile
++
++            # limit — это ПОТОЛОК, а не ожидание: у правила без
++            # expected_count его даёт число паттернов (маска разворачивается
++            # в найденные файлы). Иначе «не хватает 202 из 256» — просто ложь.
++            _expected = {
++                _rule.id: int(_rule.expected_count or len(_rule.patterns) or 0)
++                for _rule in ImportProfile.load(
++                    PROFILES_ROOT / f"{profile}.json"
++                ).resources
++            }
++        except Exception as _why:  # аудит не должен падать из-за диагностики,
++            # но и молчать о том, что диагностика не сработала, нельзя: именно
++            # молчание и стоило пяти прогонов игрока.
++            _expected = {}
++            errors.append(f"  причины не удалось разобрать: {_why}")
++        if _expected:
++            for _rid, _want in sorted(_expected.items()):
++                _got = _per_rule.get(_rid, 0)
++                if _got < _want:
++                    errors.append(
++                        f"  не хватает {_want - _got} из {_want}: {_rid}"
++                    )
++            _extra = sorted(
++                rid for rid in _per_rule if rid not in _expected
++            )
++            if _extra:
++                errors.append("  лишние правила: " + ", ".join(_extra))
+ 
+     summary["semantic_provenance"] = not errors
+     return summary
