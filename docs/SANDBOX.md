@@ -17,7 +17,6 @@ tools/sandbox/bootstrap.sh --check  # только проверить, что у
 | Что | Куда | Зачем |
 |---|---|---|
 | Godot 4.7.2 + SwiftShader | `/tmp/godotbin` | движок; единственный рендер без GPU |
-| venv импортёра | `/tmp/impvenv` | Pillow, fonttools, defusedxml для `importer/` |
 | медиа-окружение | `/tmp/mediaenv` | Pillow + numpy для хромакея |
 | Blender 4.5.3 (bpy) | `/tmp/bpyenv` + стабы | 3D, рендер, W3D→glTF без установки Blender |
 
@@ -32,22 +31,6 @@ Vulkan через SwiftShader** (CPU). Отсюда два жёстких пра
 
 Источник Godot — `Creative36711/synapse`, `tools/godot/dist`: два xz-куска
 бинарника + SwiftShader. Хэши сверяются с `SHA256SUMS` перед распаковкой.
-
-## Скриншоты рандомайзера
-
-```bash
-tools/sandbox/shots.sh /tmp/play            # → /tmp/shots
-tools/sandbox/shots.sh /tmp/play docs/shots # → в свой каталог
-```
-
-Пишет `randomizer_host.png`, `randomizer_guest.png`, `lobby.png`,
-`lobby_randomizer.png` — пиксель в пиксель (stretch выключен в скрипте).
-
-**Скрипт сам проверяет геометрию** и падает с ненулевым кодом, если окно не
-вмещает панель, выходит за пределы лобби или кнопка вылезает за край. Это не
-формальность: оба дефекта («панели нужно 536×267, а окно 490×225» и «кнопка
-шириной 198px при остатке 152px») были видны только на снимках и проходили
-мимо тестов движка.
 
 ## Blender как pip-модуль
 

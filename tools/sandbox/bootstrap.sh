@@ -82,21 +82,6 @@ godot_run() {
   "$GODOT_BIN" "$@"
 }
 
-# ------------------------------------------------------- Python импортёра
-# В дереве игры venv импортёра лежит в workspace/retail-work/tools, а не в
-# /tmp: его переживают только файлы внутри репозитория.
-install_importer_python() {
-  local venv="${1:?нужен путь}"
-  if [ -x "$venv/bin/python" ] && "$venv/bin/python" -c 'import PIL' 2>/dev/null; then
-    ok "venv импортёра уже есть: $venv"; return
-  fi
-  [ "$CHECK" = 1 ] && { miss "нет venv импортёра: $venv"; return; }
-  say "Python-окружение импортёра (Pillow, fonttools, defusedxml)"
-  python3 -m venv "$venv"
-  "$venv/bin/pip" -q install --disable-pip-version-check Pillow fonttools defusedxml
-  ok "$("$venv/bin/python" -c 'import PIL; print("Pillow", PIL.__version__)')"
-}
-
 # ------------------------------------------------------------- Blender (bpy)
 # download.blender.org в песочнице недоступен, зато pypi.org открыт:
 # bpy==4.5.3 — это целый Blender 4.5.3 LTS как pip-модуль. Колесо требует
@@ -136,14 +121,12 @@ install_media() {
 }
 
 install_godot
-install_importer_python "$WORK/impvenv"
 install_media
 install_bpy
 
 cat <<EOF
 
 Готово. Дальше:
-  сборка дерева игры:  python3 tools/prepare.py --output /tmp/play
-  снимки рандомайзера: $HERE/shots.sh /tmp/play
-  хромакей:            $WORK/mediaenv/bin/python $HERE/cutout_chromakey.py in.png out.png --crop
+  Godot:     godot_run --version
+  хромакей:  $WORK/mediaenv/bin/python $HERE/cutout_chromakey.py in.png out.png --crop
 EOF
