@@ -530,18 +530,36 @@
  var _launched := false
  var _was_connected := false
  var _profile_dirty := false
-@@ -199,6 +200,19 @@
+@@ -199,6 +200,35 @@
  	heading_label.add_theme_font_size_override("font_size", 20)
  	heading_label.add_theme_color_override("font_color", Color(0.82, 0.9, 0.78))
  	add_child(heading_label)
 +	var modal := PopupPanel.new()
 +	add_child(modal)
 +	modal.add_child(randomizer_panel)
++	# Окно должно вмещать панель целиком: её фактический минимум 536x267, а
++	# прежние 490x225 молча обрезали правый край (видно на снимках в
++	# docs/randomizer-shots). Берём минимум с полями и ставим по центру панели.
 +	var settings_button := Button.new()
 +	settings_button.text = "Randomizer…"
-+	settings_button.position = Vector2(size.x - 164, 0)
++# Правее колонки READY/GAME SETTINGS (она кончается около x=640), иначе
++# подпись кнопки наезжает на заголовки.
++	settings_button.position = Vector2(size.x - 152, 0)
++	# Ширину ограничиваем остатком панели: без этого кнопка требует 198px и
++	# вылезает за правый край (проверяется отчётом GEOM в shots.sh).
++	settings_button.size = Vector2(152, 34)
++	settings_button.clip_text = true
++	# В 152px подпись при штатном кегле не влезает и обрезается до «Randomi».
++	settings_button.add_theme_font_size_override("font_size", 14)
 +	add_child(settings_button)
-+	settings_button.pressed.connect(func(): modal.popup_centered(Vector2i(490, 225)))
++	settings_button.pressed.connect(func():
++		var popup_size: Vector2i = Vector2i(randomizer_panel.get_combined_minimum_size() + Vector2(28, 28))
++		# popup() ставит окно в ЭКРАННЫХ координатах, поэтому центр считаем
++		# от глобального прямоугольника лобби. popup_centered() центрирует по
++		# окну приложения и выносит попап за пределы панели.
++		var origin: Vector2 = get_global_rect().position + (size - Vector2(popup_size)) * 0.5
++		modal.popup(Rect2i(Vector2i(origin), popup_size))
++	)
 +	randomizer_panel.changed.connect(func():
 +		if randomizer_panel.valid():
 +			_send_settings()
