@@ -133,12 +133,22 @@ class PlanTests(unittest.TestCase):
         self.addCleanup(setattr, engine, 'published_tree_version', original)
 
     def test_a_stale_tree_still_gets_the_prepare_step(self):
+        # ВАЖНО про версию: первая версия дерева писала в .launcher-assembled
+        # человеческую фразу «Собрано лаунчером Advanced Randomizer, версия
+        # v0.3.0», а манифест отдаёт голый тег. Строки не совпадали, игрок
+        # получал бесконечную «устарело → скачать заново» на каждом запуске.
+        # Поэтому локальная версия здесь — то, что реально пишет unpack:
+        # версия из манифеста.
+        (engine.source_tree(self.root) / '.launcher-assembled').write_text(
+            'v0.3.0-main-bc9dac02\n', encoding='utf-8')
         self._published('v0.4.0')
         self.assertIn('prepare', self._plan(),
                       'игрок с устаревшим деревом обязан получить обновление')
 
     def test_a_current_tree_skips_the_prepare_step(self):
-        self._published('v0.3.0')
+        (engine.source_tree(self.root) / '.launcher-assembled').write_text(
+            'v0.3.0-main-bc9dac02\n', encoding='utf-8')
+        self._published('v0.3.0-main-bc9dac02')
         self.assertNotIn('prepare', self._plan())
 
     def test_without_network_the_plan_is_unchanged(self):
