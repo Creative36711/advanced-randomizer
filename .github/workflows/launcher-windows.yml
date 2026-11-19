@@ -54,8 +54,17 @@ jobs:
       - name: Engine tests
         shell: pwsh
         run: |
-          python -m unittest discover -s launcher/start/tests -v
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # A failing test must say WHY in the annotation, because the job log
+          # is not always reachable from where this is being triaged.
+          $out = & python -m unittest discover -s launcher/start/tests -v 2>&1
+          $out | Write-Host
+          if ($LASTEXITCODE -ne 0) {
+            $tail = ($out | Select-Object -Last 40) -join "`n"
+            # Multi-line annotation: %0A is the escape Actions understands.
+            $escaped = $tail -replace "%", "%25" -replace "`r", "" -replace "`n", "%0A"
+            Write-Host "::error title=Engine tests failed::$escaped"
+            exit 1
+          }
 
       - name: Open the window and drive it
         shell: powershell
