@@ -42,6 +42,7 @@ $script:progressStream = $null
 $script:progressReader = $null
 $script:progressBuffer = ""
 $script:lastEngineLine = ""
+$script:lastStep = ""
 $script:currentProcessId = 0
 $script:cancelRequested = $false
 $script:lastEngineWasError = $false
@@ -424,6 +425,8 @@ function Read-NewLogLines {
     while ($null -ne ($line = $Reader.ReadLine())) {
         if ($line.Trim().Length -gt 0) {
             $script:lastEngineLine = $line
+            $step = Get-StepFromLine -Line $line
+            if ($step) { $script:lastStep = $step }
             if ($line -match "^ОШИБКА|^! ОШИБКА") { $script:lastEngineWasError = $true }
             [void](Write-Log $line)
         }
@@ -505,6 +508,16 @@ function Hide-Progress {
     $progressCaption.Visible = $false
     $progressCaption.Text = ""
     $progress.Value = 0
+}
+
+function Get-StepFromLine {
+    # A step header from the engine ("=== Шаг 3/8: Готовлю окружение ===") is
+    # the one line that answers "что сейчас происходит". The window used to say
+    # только "Подготовка игры" for the whole run, so a five-minute step and a
+    # hung one looked exactly the same.
+    param([string]$Line)
+    if ($Line -match '^===\s*(Шаг\s+\d+/\d+:.*?)\s*===\s*$') { return $Matches[1] }
+    return $null
 }
 
 function Get-StepCaption {
@@ -622,6 +635,7 @@ function Invoke-Engine {
         $stop.Visible = $true
         $stop.Enabled = $true
         $stop.Text = "Остановить"
+        $script:lastStep = ""
         Show-Progress -Caption (Get-StepCaption $Arguments) -Percent (-1)
         Show-Progress -Caption "Подготовка Python" -Percent (-1)
         $python = Ensure-BootstrapPython
@@ -631,6 +645,7 @@ function Invoke-Engine {
         $script:progressReader = $null
         $script:progressBuffer = ""
         $script:lastEngineLine = ""
+        $script:lastStep = ""
         $script:lastEngineWasError = $false
         # Everything after the script path goes to the script; before it, to
         # Python.  `--progress` before `engine.py` made Python print
@@ -689,7 +704,8 @@ function Invoke-Engine {
                 $lastTick = Get-Date
                 $elapsed = [int](((Get-Date) - $started).TotalSeconds)
                 $clock = "{0}:{1:D2}" -f [int][Math]::Floor($elapsed / 60), ($elapsed % 60)
-                $form.Text = "Advanced Randomizer — идёт: {0} ({1})" -f (Get-StepCaption $Arguments), $clock
+                $doing = if ($script:lastStep) { $script:lastStep } else { Get-StepCaption $Arguments }
+                $form.Text = "Advanced Randomizer — идёт: {0} ({1})" -f $doing, $clock
             }
         }
         $process.WaitForExit()

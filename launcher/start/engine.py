@@ -1763,12 +1763,18 @@ def last_importer_refusal(root: Path) -> str:
             lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
+        # The converter writes one line per event and ends with "run.end
+        # exit_code=1". Taking the LAST error line returned exactly that, so
+        # the player was shown "exit_code=1" instead of the reason. The line
+        # that carries the cause is the `refusal` event, and it sits ABOVE the
+        # exit line - it is searched for first and by name.
         for line in reversed(lines):
-            if "refusal" in line or "ERROR" in line:
-                # Drop the timestamp and level columns: the player needs the
-                # sentence, not the log format.
-                text = line.split("|", 1)[-1].strip() if "|" in line else line.strip()
-                return text[:1200]
+            if " refusal " in line or line.lstrip().startswith("refusal "):
+                return line.strip()[:4000]
+        # Nothing called `refusal`: take what the converter said was wrong.
+        for line in reversed(lines):
+            if "ERROR" in line and "run.end" not in line:
+                return line.strip()[:2000]
     return ""
 
 
@@ -2199,7 +2205,16 @@ def _make_output_utf8_safe() -> None:
 
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+            # line_buffering, not just the encoding: the window tails a FILE
+            # (stdout redirected by Start-Process), and a redirected Python
+            # buffers 8 KB before writing anything. The player then watches
+            # "Подготовка игры" and a moving clock for minutes with no idea
+            # whether anything is happening - the exact report that made this
+            # change: five minutes, no sign of a process. Every line must reach
+            # the file when it is printed.
+            stream.reconfigure(  # type: ignore[attr-defined]
+                encoding="utf-8", errors="replace", line_buffering=True
+            )
         except (AttributeError, ValueError, OSError):
             pass
 
