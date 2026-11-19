@@ -1317,6 +1317,49 @@ def tree_manifest_url() -> str:
     )
 
 
+def published_tree_version(opener=urllib.request.urlopen) -> str | None:
+    """Версия дерева, опубликованная в релизе; None, если списка нет.
+
+    Манифест крошечный, поэтому его не жалко читать при каждом запуске — так
+    и делает install_tree_package. Здесь нужен только номер версии.
+    """
+
+    url = tree_manifest_url()
+    try:
+        with opener(
+            urllib.request.Request(url, headers={"User-Agent": "AdvancedRandomizer/1.0"}),
+            timeout=30,
+        ) as response:
+            text = response.read(1 << 20).decode("utf-8", "replace")
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return None
+    try:
+        return tree_package.read_manifest(text, source=url).version
+    except tree_package.TreeError:
+        return None
+
+
+def _tree_is_stale(install_root: Path, *, echo=print) -> bool:
+    """Собранное дерево старше опубликованного?
+
+    Сеть недоступна — считаем дерево годным: пересборка без сети всё равно
+    невозможна, а отказ на ровном месте запретил бы играть офлайн.
+    """
+
+    local = tree_version(install_root)
+    published = published_tree_version()
+    if published is None:
+        return False
+    if local is None:
+        # Дерево есть, но не называет версию: это сборка старого образца.
+        echo(f"  дерево не называет версию, а опубликована {published}")
+        return True
+    if local != published:
+        echo(f"  у вас {local}, опубликована {published}")
+        return True
+    return False
+
+
 def step_prepare(
     settings: Settings,
     runner: Runner,
@@ -1336,8 +1379,16 @@ def step_prepare(
     root = _install_root(settings)
     tree = source_tree(root)
     if source_ready(root):
-        echo(f"Исходники уже собраны: {tree}")
-        return tree
+        # Собранное дерево НЕ пересобирается само. Это верно для «уже готово»
+        # и неверно, когда в нём исправление, без которого конвертация падает:
+        # игрок обновляет лаунчер, видит ту же ошибку и решает, что починили
+        # не то. Поэтому версию дерева сверяем с опубликованным манифестом, а
+        # не полагаемся на «файл на месте = всё хорошо».
+        stale = _tree_is_stale(root, echo=echo)
+        if not stale:
+            echo(f"Исходники уже собраны: {tree}")
+            return tree
+        echo("Дерево игры устарело — скачиваю собранное заново.")
     try:
         return install_tree_package(
             settings, echo=echo, opener=opener, progress=progress
