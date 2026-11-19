@@ -113,7 +113,8 @@ int AptSkirmish::ruleCheckCount() const
 		return 0;
 	}
 	const int mode = m_setup->rulesMode();
-	return MpGameRules::numCheckBoxes(mode) + (mode == RULES_MODE_SKIRMISH && cheatModeOffered() ? 1 : 0);
+	return MpGameRules::numCheckBoxes(mode) + (mode == RULES_MODE_SKIRMISH && cheatModeOffered() ? 1 : 0) +
+		   (mode == RULES_MODE_SKIRMISH && cheatModeOffered() ? 1 : 0); // lane CHAOS-1: the row after Cheat Mode
 }
 
 int AptSkirmish::ruleComboCount() const
@@ -335,6 +336,19 @@ void AptSkirmish::populateRuleChecks()
 	{
 		m_setup->setCheatMode(false); // a screen that does not offer the row never keeps the rule
 	}
+	// lane CHAOS-1: the Chaos row follows Cheat Mode's (mode 0, where offered); the same generated-row rule as the cheat row above
+	if (mode == RULES_MODE_SKIRMISH && cheatModeOffered() && (std::size_t)row < m_ruleChecks.size() && m_ruleChecks[(std::size_t)row])
+	{
+		GameWindow *window = m_ruleChecks[(std::size_t)row];
+		m_chaosCheck = window;
+		windows().setAptText("APT:RuleCheckBox_" + std::to_string(row++), toUtf8(ChaosRule::label()));
+		window->winHide(false);
+		updateChaosGadget();
+	}
+	else if (!cheatModeOffered() && m_setup->info().chaosModeOn())
+	{
+		m_setup->setChaos(false);
+	}
 	const int checkRows = ruleCheckCount();
 	while (row < checkRows && (std::size_t)row < m_ruleChecks.size())
 	{
@@ -418,6 +432,18 @@ void AptSkirmish::updateCheatGadget()
 	m_ruleInput = true;
 }
 
+void AptSkirmish::updateChaosGadget()
+{
+	if (!m_chaosCheck || !m_setup)
+	{
+		return;
+	}
+	m_ruleInput = false;
+	GadgetCheckBoxSetChecked(m_chaosCheck, m_setup->info().chaosModeOn());
+	m_chaosCheck->winEnable(amIHost());
+	m_ruleInput = true;
+}
+
 void AptSkirmish::refreshRuleGadgets()
 {
 	// AptMpGameRules::rva0057E6C1: every rule's UpdateRuleGadget
@@ -427,6 +453,7 @@ void AptSkirmish::refreshRuleGadgets()
 	}
 	updateLegendaryGadget();
 	updateCheatGadget();
+	updateChaosGadget();
 }
 
 bool AptSkirmish::onRuleGadget(GameWindow *gadget)
@@ -446,6 +473,19 @@ bool AptSkirmish::onRuleGadget(GameWindow *gadget)
 				return true;
 			}
 			ruleChanged(-2, false);
+		}
+		return true;
+	}
+	if (gadget == m_chaosCheck)
+	{
+		if (m_ruleInput && !m_refreshing)
+		{
+			if (!amIHost() || !m_setup->setChaos(GadgetCheckBoxIsChecked(gadget)))
+			{
+				updateChaosGadget();
+				return true;
+			}
+			ruleChanged(-3, false); // lane CHAOS-1: -3 in the rule warning's name (the cheat row's -2, the legendary combo's -1)
 		}
 		return true;
 	}
@@ -518,7 +558,7 @@ void AptSkirmish::ruleChanged(int kind, bool reset)
 	else
 	{
 		notice = fetchOrMissing(m_env.gameText, "GUI:RuleChangeWarning") + u" " +
-			(kind == -2 ? CheatModeRule::label() : kind < 0 ? LegendaryHeroes::label() : m_setup->ruleName(kind)); // -2: lane CHEAT-1's Cheat Mode
+			(kind == -2 ? CheatModeRule::label() : kind == -3 ? ChaosRule::label() : kind < 0 ? LegendaryHeroes::label() : m_setup->ruleName(kind)); // -2: lane CHEAT-1's Cheat Mode
 	}
 	if (!notice.empty())
 	{

@@ -384,6 +384,10 @@ bool LiveGame::load(const Options &options, std::string *error)
 		}
 		m_logic->cheatMode().configure(slot, seat->getPlayerIndex());
 	}
+	// lane CHAOS-1: the Chaos mode comes on only in a game whose setup says so (the host's rule); every peer read the same setup, so every peer's
+	// schedule starts on the same frame. A tool or a map viewer (no start message) runs without it
+	m_logic->chaosMode().configure(options.start && options.start->message.game.chaosModeOn());
+	m_logic->chaosMode().reset();
 	// lane UBER-1: the game setup's simulation profile (a game without a start message, a map viewer or a tool, is Faithful unless its options say Uber)
 	m_logic->setSimulationProfile(options.start ? options.start->message.game.simulationProfile : options.simulationProfile);
 	// lane BFME2MODE-0: the edition is the mounted data's (BFME2 1.06 alone under OPENBFME_EDITION=bfme2), never an option
@@ -500,6 +504,7 @@ bool LiveGame::load(const Options &options, std::string *error)
 	m_spellCommands.registerHandlers(*m_dispatch); // SPELL-1: the spell book messages
 	TributeCommands::registerHandlers(*m_dispatch); // PLAY-1: MSG_GIVE_MONEY, the tribute (RW 0x6264E1)
 	CheatMode::registerHandlers(*m_dispatch);       // CHEAT-1: MSG_OPENBFME_CHEAT (refused unless the game setup has Cheat Mode)
+	ChaosMode::registerHandlers(*m_dispatch);       // CHAOS-1: MSG_OPENBFME_CHAOS (refused unless the game setup has Chaos mode)
 	SpecialPowerModules::installScienceHooks(*m_logic);
 	m_drawables = std::make_unique<DrawableManager>(m_assets, *m_logic);
 	// SMOOTH-1: the logic talks to its client through ordered events (ClientEvents.h); the render side applies them (DrawableManager::applyEvents)

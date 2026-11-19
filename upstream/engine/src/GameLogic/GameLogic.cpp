@@ -642,6 +642,7 @@ void GameLogic::update(int phase)
 		m_dot->update(); // RW 0x62E8C9 .. 0x62E8CF: GameLogic + 0x174, the DOTManager (lane DECOMP-1)
 		m_invisibility->update(); // RW 0x62E8D4 .. 0x62E8DA: GameLogic + 0x178, the last of that row, before the command list (lane STEALTH-1)
 		runRow(ROW_COMMAND_LIST);
+		m_chaosMode.update(*this); // lane CHAOS-1: the event schedule, after the frame's commands (a cheat spawn and an event never fight over order)
 		runRow(ROW_DRAWABLE_CALLBACK);
 	}
 	if (phase == 2)
@@ -1415,6 +1416,7 @@ std::uint32_t GameLogic::hashState(std::vector<StateHashSection> *sections, std:
 	{
 		section("create-a-hero", [&](StateHasher &x) { x.addU32(m_createAHeroes->crc()); });
 	}
+	section("chaos", [&](StateHasher &x) { m_chaosMode.crc(x); }); // lane CHAOS-1: empty for a normal game, so its hash does not move
 	section("weather", [&](StateHasher &x) { m_weather->crc(x); }); // lane SPELL-2
 	section("invisibility", [&](StateHasher &x) { m_invisibility->crc(x); }); // lane STEALTH-1
 	if (!m_dot->empty())

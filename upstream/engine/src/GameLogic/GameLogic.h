@@ -57,6 +57,7 @@
 #include "Common/Team.h"
 #include "GameLogic/CampaignCarryover.h"
 #include "GameLogic/AI/AICommandSink.h"
+#include "GameLogic/ChaosMode.h"
 #include "GameLogic/CheatMode.h"
 #include "GameLogic/FXEvents.h"
 #include "GameLogic/LargeGroupAudioLink.h"
@@ -657,6 +658,10 @@ public:
 	// lane CHEAT-1, OpenBFME: the game's Cheat Mode (GameLogic/CheatMode.h): off unless LiveGame::load configures the cheat seat from the game setup
 	CheatMode::State &cheatMode() { return m_cheatMode; }
 	const CheatMode::State &cheatMode() const { return m_cheatMode; }
+	// lane CHAOS-1, OpenBFME: the Chaos mode (GameLogic/ChaosMode.h): off unless LiveGame::load configures it from the game setup. Its state is
+	// hashed and saved; its schedule runs in phase 1, after the command list
+	ChaosMode::State &chaosMode() { return m_chaosMode; }
+	const ChaosMode::State &chaosMode() const { return m_chaosMode; }
 	// lane UBER-1: the simulation profile (Common/SimulationProfile.h; set before the first frame). Hashed only when Uber, so a Faithful game keeps its hash
 	void setSimulationProfile(SimulationProfile p) { m_simulationProfile = p; }
 	SimulationProfile simulationProfile() const { return m_simulationProfile; }
@@ -1138,6 +1143,7 @@ private:
 	std::map<std::string, std::int32_t> m_buildableOverrides; ///< lane BFME2CAMP1: RW GameLogic + 0x10 (template name -> Buildable)
 	std::optional<CampaignCarryover::State> m_campaignCarryover; ///< lane BFME2CAMP1 (OpenBFME: retail's campaign manager)
 	CheatMode::State m_cheatMode;                  ///< lane CHEAT-1 (OpenBFME)
+	ChaosMode::State m_chaosMode;                  ///< lane CHAOS-1 (OpenBFME)
 	SimulationProfile m_simulationProfile = SimulationProfile::Faithful; ///< lane UBER-1 (OpenBFME)
 	GameEdition m_edition = GameEdition::RotWK201;                         ///< lane BFME2MODE-0 (OpenBFME)
 	bool m_frameAdvance = true;   ///< RW GameLogic + 0x44

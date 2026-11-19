@@ -140,6 +140,7 @@ public:
 	GameWindow *legendaryHeroesWindow() const { return m_legendaryCombo; }
 	// lane CHEAT-1: OpenBFME's Cheat Mode check row (null while the screen does not offer it)
 	GameWindow *cheatModeWindow() const { return m_cheatCheck; }
+	GameWindow *chaosWindow() const { return m_chaosCheck; } // lane CHAOS-1
 	AptMessageBox *ruleBox() const { return m_ruleBox.get(); } // lane OWNERFIX-2: the Rules tab's warning box (APT:CommandPointsTooHigh), for the harness
 	bool rulesPopulated() const { return m_rulesPopulated; }
 	// the rule warning boxes shown (title, text), for tests
@@ -331,7 +332,8 @@ private:
 	void enableRuleGadgets();                                         ///< RW 0x57E97A's RotWK twin: enabled = host and shown
 	void updateRuleGadget(int rule);                                  ///< RW 0x986624
 	void updateLegendaryGadget();
-	void updateCheatGadget(); // lane CHEAT-1
+	void updateCheatGadget();
+	void updateChaosGadget(); // lane CHAOS-1
 	bool onRuleGadget(GameWindow *gadget);                            ///< RW 0x986776: true when `gadget` is a rule gadget
 	void ruleChanged(int kind, bool reset);                           ///< RW 0x8421E0
 	void resetRules();                                                ///< AptMpGameRules::Reset RW 0x98674C
@@ -471,6 +473,7 @@ private:
 	std::array<int, NUM_GAME_RULES> m_ruleStates{};
 	GameWindow *m_legendaryCombo = nullptr;
 	GameWindow *m_cheatCheck = nullptr; // lane CHEAT-1
+	GameWindow *m_chaosCheck = nullptr; // lane CHAOS-1
 	bool m_ruleInput = true;
 	bool m_rulesPopulated = false;
 	std::unique_ptr<AptMessageBox> m_ruleBox;
