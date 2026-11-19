@@ -1,0 +1,8 @@
+{
+  "schema": "openbfme.bundled-source-identity",
+  "schemaVersion": 1,
+  "commit": "cfe7e0ce2b01166f14b79d615cc6abc1bc0e70eb",
+  "sourceClean": true,
+  "ourRepository": "Creative36711/advanced-randomizer",
+  "note": "Снимок версии этого репозитория. Обновляется CI при сборке пакета дерева: коммит, из которого собран релиз. prepare.py копирует файл в дерево и НЕ вызывает git — у игрока его нет."
+}

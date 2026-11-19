@@ -61,6 +61,16 @@ def assemble(source: Path, destination: Path) -> None:
     import shutil
 
     shutil.copytree(ROOT / 'game', tree / 'game', dirs_exist_ok=True)
+    # Дерево обязано назвать свой коммит: без release-identity.json импортёр
+    # отказывает на аудите происхождения ("has no exact git commit"), и
+    # конвертация у игрока падает на последнем шаге после 216 с работы.
+    # Источник — release-identity.json нашего репозитория (его обновляет CI);
+    # сам здесь git не вызывается: на машине игрока его нет.
+    stamp = ROOT / 'release-identity.json'
+    if stamp.is_file():
+        shutil.copyfile(stamp, tree / 'release-identity.json')
+    else:
+        print('ВНИМАНИЕ: нет release-identity.json — пакет откажет на аудите')
     if tree != destination:
         for item in tree.iterdir():
             item.rename(destination / item.name)
