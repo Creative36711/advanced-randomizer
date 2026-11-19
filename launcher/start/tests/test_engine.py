@@ -323,7 +323,10 @@ class ArchiveTests(TempCase):
         with zipfile.ZipFile(archive, "w") as zf:
             zf.writestr("dir/tool.exe", "binary")
         engine.extract_zip(archive, self.root / "out")
-        self.assertEqual((self.root / "out" / "dir" / "tool.exe").read_text(), "binary")
+        self.assertEqual(
+            (self.root / "out" / "dir" / "tool.exe").read_text(encoding="utf-8"),
+            "binary",
+        )
 
 
 class Recorder:
@@ -1171,7 +1174,10 @@ class ProgressTests(unittest.TestCase):
             echo=lambda line: None,
             progress=progress,
         )
-        events = [json.loads(line) for line in path.read_text().splitlines()]
+        events = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+        ]
         kinds = [event["kind"] for event in events]
         self.assertEqual(kinds[0], "begin")
         self.assertEqual(kinds[-1], "end")
@@ -1188,7 +1194,10 @@ class ProgressTests(unittest.TestCase):
         progress, path, json = self.sink()
         runner = engine.Runner(echo=lambda line: None, progress=progress)
         runner.run([_sys.executable, "-c", "import time; time.sleep(0.1)"])
-        kinds = [json.loads(line)["kind"] for line in path.read_text().splitlines()]
+        kinds = [
+            json.loads(line)["kind"]
+            for line in path.read_text(encoding="utf-8").splitlines()
+        ]
         self.assertEqual(kinds, ["begin", "end"])
 
     def test_a_broken_sink_never_breaks_a_step(self) -> None:
@@ -1492,7 +1501,7 @@ class SilentDownloadTests(unittest.TestCase):
         )
         counted = [
             json.loads(line)
-            for line in events.read_text().splitlines()
+            for line in events.read_text(encoding="utf-8").splitlines()
             if json.loads(line)["kind"] == "progress"
         ]
         self.assertGreaterEqual(len(counted), 9)
@@ -1611,7 +1620,7 @@ class BytesAndEtaTests(unittest.TestCase):
         )
         rows = [
             json.loads(line)
-            for line in events.read_text().splitlines()
+            for line in events.read_text(encoding="utf-8").splitlines()
             if json.loads(line)["kind"] == "progress"
         ]
         self.assertTrue(any(row["rate"] > 0 for row in rows), "rate must be measured")
