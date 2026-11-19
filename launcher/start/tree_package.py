@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import zipfile
 from dataclasses import dataclass
@@ -176,8 +177,10 @@ def unpack(archive: Path, destination: Path) -> None:
                 f"распакованное дерево было бы {total // (1024 * 1024)} МБ "
                 f"(предел {MAX_UNPACKED // (1024 * 1024)} МБ)"
             )
-        if destination.exists():
-            shutil.rmtree(destination)
+        # NOT rmtree(destination): inside the tree lives workspace/retail-work,
+        # the converted content that costs the player about an hour, and the
+        # pack selection. The tree is code and is replaced; the player's work
+        # is not, and an update that wiped it would be worse than no update.
         staging = destination.parent / (destination.name + ".unpacking")
         if staging.exists():
             shutil.rmtree(staging)
@@ -192,4 +195,15 @@ def unpack(archive: Path, destination: Path) -> None:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with target.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
-        staging.rename(destination)
+        destination.mkdir(parents=True, exist_ok=True)
+        # Merged, not swapped: every file of the new tree wins (its files are
+        # the code), and everything the package does not carry - the converted
+        # content, the importer's Python environment - stays where it is.
+        for root, _dirs, files in os.walk(staging):
+            here = Path(root)
+            relative = here.relative_to(staging)
+            target_dir = destination / relative
+            target_dir.mkdir(parents=True, exist_ok=True)
+            for name in files:
+                os.replace(here / name, target_dir / name)
+        shutil.rmtree(staging)

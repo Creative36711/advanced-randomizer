@@ -727,12 +727,15 @@ function Invoke-Engine {
             $exitKnown = $false
         }
         if (-not $exitKnown) {
+            # "Код возврата недоступен" reads like a fault to a player, and it
+            # is not one: Windows simply did not hand the number over. Say what
+            # was decided and on what evidence, in words that need no apology.
             if ($hadError) {
                 $code = 1
-                [void](Write-Log "Код возврата недоступен; в выводе есть ошибка — считаю шаг неудачным.")
+                [void](Write-Log "Шаг напечатал ошибку — считаю его неудачным.")
             } elseif ($script:lastEngineLine) {
                 $code = 0
-                [void](Write-Log "Код возврата недоступен, но шаг отчитался об успехе.")
+                [void](Write-Log "Шаг завершился и отчитался об успехе.")
             } else {
                 $code = 1
             }

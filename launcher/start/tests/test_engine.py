@@ -60,6 +60,17 @@ def make_patch202(root: Path) -> Path:
     return root
 
 
+def offline(*_args, **_kwargs):
+    """An opener that refuses everything: a unit test must not use the network.
+
+    Without it a test that calls step_prepare downloads the published tree on
+    any machine that has a release - the Windows run did, the Linux run did
+    not, and the same test then passed in one place and failed in the other.
+    """
+
+    raise urllib.error.URLError(OSError(101, "network disabled in tests"))
+
+
 def make_source(root: Path) -> Path:
     """A tree that passes the same checks as a real one: the game AND our mod.
 
@@ -486,14 +497,20 @@ class PrepareTests(TempCase):
         (tree / "game" / "project.godot").unlink()
         (tree / "tools" / "openbfme_import.py").unlink()
         with self.assertRaises(engine.LauncherError) as caught:
-            engine.step_prepare(engine.Settings(install_root=self.root), Recorder(), echo=lambda _l: None)
+            engine.step_prepare(
+                engine.Settings(install_root=self.root), Recorder(),
+                echo=lambda _l: None, opener=offline, progress=None,
+            )
         self.assertEqual(caught.exception.code, engine.EXIT_STATE)
         self.assertTrue(tree.is_dir())
 
     def test_assembled_tree_is_reused_without_running_anything(self) -> None:
         make_source(self.root)
         recorder = Recorder()
-        engine.step_prepare(engine.Settings(install_root=self.root), recorder, echo=lambda _l: None)
+        engine.step_prepare(
+            engine.Settings(install_root=self.root), recorder,
+            echo=lambda _l: None, opener=offline, progress=None,
+        )
         self.assertEqual(recorder.commands, [])
 
 
@@ -573,11 +590,31 @@ class TreePackageTests(unittest.TestCase):
             destination = Path(scratch) / "tree"
             tree_package.unpack(archive, destination)
             self.assertTrue((destination / "game" / "project.godot").is_file())
-            # A second unpack must not leave files from the first one behind.
+            self.assertFalse((destination.parent / "tree.unpacking").exists())
+
+    def test_an_update_keeps_what_the_player_made(self) -> None:
+        # The tree holds workspace/retail-work: the converted content that
+        # costs about an hour. Replacing the folder instead of merging over it
+        # would throw that work away on every update - worse than no update.
+        import tree_package
+
+        with tempfile.TemporaryDirectory() as scratch:
+            destination = Path(scratch) / "openbfme"
+            converted = destination / "workspace" / "retail-work" / "editions" / "big.bin"
+            converted.parent.mkdir(parents=True)
+            converted.write_bytes(b"converted content\n")
+            selection = destination / "workspace" / "content-packs" / "selection.json"
+            selection.parent.mkdir(parents=True)
+            selection.write_text('{"activePack": "p"}', encoding="utf-8")
+
+            archive = Path(scratch) / "new.zip"
             with zipfile.ZipFile(archive, "w") as zf:
                 zf.writestr("openbfme/game/project.godot", "[application]\n")
             tree_package.unpack(archive, destination)
-            self.assertFalse((destination / "tools").exists())
+
+            self.assertTrue(converted.is_file(), "сконвертированный контент стёрт обновлением")
+            self.assertTrue(selection.is_file(), "выбор пака стёрт обновлением")
+            self.assertTrue((destination / "game" / "project.godot").is_file())
 
 
 class WindowsPathTests(unittest.TestCase):
@@ -629,6 +666,76 @@ class WindowsPathTests(unittest.TestCase):
 
 def tree_package_path() -> Path:
     return Path(__file__).resolve().parents[1] / "tree_package.py"
+
+
+class PreviousInstallTests(TempCase):
+    """A folder from the pre-release launcher must be described, not hidden.
+
+    It has the tree but not the randomizer, so source_ready says no - technically
+    right, practically useless: the player reads "ничего не собрано" about a
+    folder that took an hour to build and may wipe it for nothing.
+    """
+
+    def _old_install(self) -> Path:
+        tree = engine.source_tree(self.root)
+        (tree / "game").mkdir(parents=True)
+        (tree / "game" / "project.godot").write_text("[application]\n", encoding="utf-8")
+        # the importer's hour of work, and the marker the old path wrote
+        state = engine.state_root(self.root) / "editions"
+        state.mkdir(parents=True)
+        (state / "big.bin").write_bytes(b"converted\n")
+        engine.mark(self.root, "assembled")
+        return self.root
+
+    def test_it_is_named_as_a_previous_install_not_as_nothing(self) -> None:
+        self._old_install()
+        report = engine.status(engine.Settings(install_root=self.root))
+        self.assertTrue(report["previousInstall"])
+        notes = " ".join(report["notes"])
+        self.assertIn("прежней версии", notes)
+        self.assertNotIn("ещё не собраны", notes)
+
+    def test_the_player_is_told_clearing_is_not_needed(self) -> None:
+        self._old_install()
+        notes = " ".join(engine.status(engine.Settings(install_root=self.root))["notes"])
+        self.assertIn("Очищать её не нужно", notes)
+
+    def test_a_folder_with_nothing_in_it_is_still_a_first_run(self) -> None:
+        report = engine.status(engine.Settings(install_root=self.root))
+        self.assertIsNone(report["previousInstall"])
+        self.assertIn("ещё не собраны", " ".join(report["notes"]))
+
+    def test_an_up_to_date_tree_is_not_called_old(self) -> None:
+        make_source(self.root)
+        engine.mark(self.root, "assembled", "v0.3.0")
+        report = engine.status(engine.Settings(install_root=self.root))
+        self.assertIsNone(report["previousInstall"])
+        self.assertEqual(report["treeVersion"], "v0.3.0")
+
+    def test_the_step_title_does_not_promise_a_local_build(self) -> None:
+        # It reads "собираю исходники" while it installs a package CI built.
+        self.assertNotIn("Собираю исходники", engine.FIRST_RUN_TITLES["prepare"])
+        self.assertIn("CI", engine.FIRST_RUN_TITLES["prepare"])
+
+
+class NoNetworkTests(unittest.TestCase):
+    """Every call to step_prepare in the tests must be given an opener.
+
+    A release on GitHub turned one old test into a real download: it passed in
+    the Linux sandbox (no release host reachable) and failed on Windows, where
+    the launcher quietly installed the published tree and skipped the branch
+    the test was about. A test that depends on the internet is not a test.
+    """
+
+    def test_every_step_prepare_call_says_where_it_reads_from(self) -> None:
+        source = Path(__file__).read_text(encoding="utf-8")
+        blocks = source.split("engine.step_prepare(")[1:]
+        offenders = []
+        for block in blocks:
+            call = block.split("\n\n", 1)[0]
+            if "opener=" not in call:
+                offenders.append(call.splitlines()[0][:60])
+        self.assertEqual(offenders, [])
 
 
 class PlainOpenBFMEGuardTests(TempCase):
