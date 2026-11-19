@@ -765,6 +765,9 @@ def status(settings: Settings) -> dict:
     """Everything the window needs to draw one line of truth per row."""
 
     root = settings.install_root
+    # 2.02 определяется по содержимому папки RotWK, а не только по отдельному
+    # полю: он ставится модом поверх 2.01.
+    overlay = patch202_root(settings)
     report: dict = {
         "installRoot": str(root) if root else None,
         "installRootExists": bool(root and root.is_dir()),
@@ -779,12 +782,15 @@ def status(settings: Settings) -> dict:
         "ready": False,
         "rotwk": _describe(settings.rotwk_install),
         "bfme2": _describe(settings.bfme2_install),
-        "patch202": has_patch202(settings.patch202_root),
-        "patch202Root": str(settings.patch202_root) if settings.patch202_root else None,
+        # Не has_patch202(settings.patch202_root): 2.02 ставят модом ПОВЕРХ
+        # 2.01, заменяя файлы в её папке, поэтому отдельного пути обычно нет.
+        # Из-за этой проверки окно честно стоящего 2.02 не видело, показывало
+        # «нет 2.02» и уводило игрока в ветку BFME2 — при том что
+        # patch202_root() находит оверлей в папке RotWK.
+        "patch202": overlay is not None,
+        "patch202Root": str(overlay) if overlay else None,
         "canFullRotwk": bool(
-            settings.rotwk_install
-            and settings.bfme2_install
-            and has_patch202(settings.patch202_root)
+            settings.rotwk_install and settings.bfme2_install and overlay
         ),
         # What the window may prefill a field with when it is still empty.
         "defaultInstallRoot": str(default_install_root()),
