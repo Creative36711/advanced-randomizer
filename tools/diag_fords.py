@@ -11,17 +11,39 @@ import sys
 from pathlib import Path
 
 
+def find_tree(hint: Path) -> Path:
+    """The folder that actually holds importer/.
+
+    Распаковка срезает верхнюю папку архива, поэтому importer лежит прямо в
+    openbfme; но ручной распакованный архив даёт openbfme/openbfme. Ищем, а
+    не заставляем игрока угадывать: неверный путь в инструкции уже стоил
+    одного круга переписки.
+    """
+
+    candidates = [hint, hint / "openbfme", hint / "openbfme" / "openbfme"]
+    for candidate in candidates:
+        if (candidate / "importer" / "openbfme_importer").is_dir():
+            return candidate
+    return hint
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--install", required=True)
     parser.add_argument("--game", default="bfme2")
     parser.add_argument(
         "--tree", required=True,
-        help="папка openbfme/openbfme из лаунчера (внутри неё лежит importer/)")
+        help="папка openbfme из лаунчера (importer/ внутри неё; вложенность "
+             "найдётся сама)")
     parser.add_argument("--profile", default="men-fords-v0")
     args = parser.parse_args()
 
-    tree = Path(args.tree)
+    tree = find_tree(Path(args.tree))
+    if not (tree / "importer" / "openbfme_importer").is_dir():
+        print(f"не нашёл importer/ в {args.tree}")
+        print("Укажите папку openbfme из лаунчера — ту, где лежит workspace/.")
+        return 2
+    print(f"дерево: {tree}")
     sys.path.insert(0, str(tree / "importer"))
     from openbfme_importer.catalog import (
         DEFAULT_BFME2_ARCHIVE_POLICY,
