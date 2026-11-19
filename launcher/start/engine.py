@@ -807,7 +807,20 @@ def status(settings: Settings) -> dict:
     report["ready"] = bool(
         report["sourceReady"] and report["godotReady"] and report["packSelected"]
     )
-    if not report["sourceReady"]:
+    report["previousInstall"] = previous_install(root)
+    report["treeVersion"] = tree_version(root)
+    if report["previousInstall"]:
+        # A folder built by the pre-release launcher has the tree but not our
+        # mod, so it reads as "ничего не собрано" and sends the player into a
+        # local build. Say what it is and that it is safe to replace.
+        built = report["previousInstall"]
+        when = f" ({built})" if built != "неизвестно" else ""
+        report["notes"].append(
+            f"В этой папке лежит установка прежней версии лаунчера{when}. "
+            "Очищать её не нужно: лаунчер сам заменит код игры, а "
+            "сконвертированный контент и Python-окружение оставит на месте."
+        )
+    elif not report["sourceReady"]:
         report["notes"].append("Исходники OpenBFME ещё не собраны.")
     if not report["godotReady"]:
         report["notes"].append("Движок Godot ещё не скачан.")
@@ -818,6 +831,49 @@ def status(settings: Settings) -> dict:
             "Папка BFME2 1.06 не выбрана — без неё контент не из чего конвертировать."
         )
     return report
+
+
+def tree_version(install_root: Path) -> str | None:
+    """What the tree says it is; the version is written in two places.
+
+    ``.launcher-assembled`` is the file inside the tree, the ``assembled``
+    marker is the launcher's own record. They can disagree - an interrupted
+    unpack writes one and not the other - so both are read and the file wins.
+    """
+
+    candidates = [markers_dir(install_root) / "assembled"]
+    candidates.append(source_tree(install_root) / ".launcher-assembled")
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        # The old path wrote a sentence, the release path writes the version.
+        first = text.splitlines()[0].strip() if text else ""
+        if first:
+            return first
+    return None
+
+
+def previous_install(install_root: Path) -> str | None:
+    """Describe an installation made by the launcher before the release model.
+
+    The marker ``assembled`` was written by the old local-build path, and the
+    tree it produced has no randomizer files, so ``source_ready`` says no. That
+    answer is technically right and practically useless: the player needs to
+    know the folder is a working install, not that it is empty.
+    """
+
+    if not marker(install_root, "assembled"):
+        return None
+    if source_ready(install_root):
+        return None
+    tree = source_tree(install_root)
+    if not (tree / "game" / "project.godot").is_file():
+        return None
+    return tree_version(install_root) or "неизвестно"
 
 
 def _describe(path: Path | None) -> str | None:
@@ -1984,7 +2040,9 @@ def step_launch(settings: Settings, runner: Runner, *, echo=print) -> None:
 
 FIRST_RUN_TITLES = {
     "python": "Проверяю Python",
-    "prepare": "Собираю исходники OpenBFME",
+    # The step no longer builds anything when a release exists: it installs the
+    # tree CI published. The old title promised a build the player never sees.
+    "prepare": "Готовлю дерево игры (сборка CI)",
     "git": "Проверяю git",
     "venv": "Готовлю Python-окружение импортёра",
     "tools": "Готовлю Blender и FFmpeg",
