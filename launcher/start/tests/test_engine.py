@@ -60,6 +60,17 @@ def make_patch202(root: Path) -> Path:
     return root
 
 
+def offline(*_args, **_kwargs):
+    """An opener that refuses everything: a unit test must not use the network.
+
+    Without it a test that calls step_prepare downloads the published tree on
+    any machine that has a release - the Windows run did, the Linux run did
+    not, and the same test then passed in one place and failed in the other.
+    """
+
+    raise urllib.error.URLError(OSError(101, "network disabled in tests"))
+
+
 def make_source(root: Path) -> Path:
     """A tree that passes the same checks as a real one: the game AND our mod.
 
@@ -486,14 +497,20 @@ class PrepareTests(TempCase):
         (tree / "game" / "project.godot").unlink()
         (tree / "tools" / "openbfme_import.py").unlink()
         with self.assertRaises(engine.LauncherError) as caught:
-            engine.step_prepare(engine.Settings(install_root=self.root), Recorder(), echo=lambda _l: None)
+            engine.step_prepare(
+                engine.Settings(install_root=self.root), Recorder(),
+                echo=lambda _l: None, opener=offline, progress=None,
+            )
         self.assertEqual(caught.exception.code, engine.EXIT_STATE)
         self.assertTrue(tree.is_dir())
 
     def test_assembled_tree_is_reused_without_running_anything(self) -> None:
         make_source(self.root)
         recorder = Recorder()
-        engine.step_prepare(engine.Settings(install_root=self.root), recorder, echo=lambda _l: None)
+        engine.step_prepare(
+            engine.Settings(install_root=self.root), recorder,
+            echo=lambda _l: None, opener=offline, progress=None,
+        )
         self.assertEqual(recorder.commands, [])
 
 
@@ -699,6 +716,26 @@ class PreviousInstallTests(TempCase):
         # It reads "собираю исходники" while it installs a package CI built.
         self.assertNotIn("Собираю исходники", engine.FIRST_RUN_TITLES["prepare"])
         self.assertIn("CI", engine.FIRST_RUN_TITLES["prepare"])
+
+
+class NoNetworkTests(unittest.TestCase):
+    """Every call to step_prepare in the tests must be given an opener.
+
+    A release on GitHub turned one old test into a real download: it passed in
+    the Linux sandbox (no release host reachable) and failed on Windows, where
+    the launcher quietly installed the published tree and skipped the branch
+    the test was about. A test that depends on the internet is not a test.
+    """
+
+    def test_every_step_prepare_call_says_where_it_reads_from(self) -> None:
+        source = Path(__file__).read_text(encoding="utf-8")
+        blocks = source.split("engine.step_prepare(")[1:]
+        offenders = []
+        for block in blocks:
+            call = block.split("\n\n", 1)[0]
+            if "opener=" not in call:
+                offenders.append(call.splitlines()[0][:60])
+        self.assertEqual(offenders, [])
 
 
 class PlainOpenBFMEGuardTests(TempCase):
