@@ -1,49 +1,49 @@
 #!/usr/bin/env bash
-# Поднять окружение песочницы Arena одной командой после её сброса.
+# Поднять окружение для работы над OpenBFME в песочнице Arena одной командой.
 #
-#   tools/sandbox/bootstrap.sh            # всё нужное: Godot + импортёр + медиа
+#   tools/sandbox/bootstrap.sh            # всё нужное: Godot + Blender + медиа
 #   tools/sandbox/bootstrap.sh --check    # только проверить, что уже есть
+#   tools/sandbox/build_engine.sh         # отдельно: собрать движок (долго)
 #
-# Качается только то, чего нет: /tmp чистится между сессиями, поэтому каждый
-# шаг сначала смотрит на диск. Все источники — из белого списка песочницы
-# (api.github.com, pypi.org, files.pythonhosted.org); download.blender.org
-# недоступен, поэтому Blender ставится pip-модулем bpy, а X11/GL-зависимости
-# закрываются пустыми стабами (см. bpy_stubs.py).
-set -euo pipefail
+# Песочница сбрасывается между сессиями: /tmp обнуляется. Поэтому всё, что
+# ставится, ставится повторно этим скриптом, а не считается «уже стоящим».
+set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/../.." && pwd)"
-WORK="${ARENA_WORK:-/tmp}"
+WORK="${WORK:-/tmp}"
 CHECK=0
-for a in "$@"; do
-  case "$a" in
-    --check) CHECK=1 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
-    *) echo "неизвестный параметр: $a" >&2; exit 2 ;;
-  esac
-done
+[ "${1:-}" = "--check" ] && CHECK=1
 
-say() { echo "==> $*"; }
-ok()  { echo "    ✓ $*"; }
-miss(){ echo "    ✗ $*"; }
+say()  { printf '==> %s\n' "$*"; }
+ok()   { printf '    ✓ %s\n' "$*"; }
+miss() { printf '    ✗ %s\n' "$*"; }
 
-# ---------------------------------------------------------------- Godot 4.7.2
-# Берётся из Creative36711/synapse (tools/godot/dist): xz-куски бинарника и
-# SwiftShader. Это единственный известный источник, у которого рендер работает
-# без GPU: offscreen + Vulkan на CPU.
-SYNAPSE_REPO="Creative36711/synapse"
-GODOT_DIR="$WORK/godotbin"
-GODOT_BIN="$GODOT_DIR/godot"
-
-gh_blob() { # <repo> <path> <dest>
-  local repo="$1" path="$2" dest="$3" sha
-  sha=$(curl -sS "https://api.github.com/repos/$repo/contents/$path" \
-        -H "Accept: application/vnd.github+json" \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')
-  curl -sS -L "https://api.github.com/repos/$repo/git/blobs/$sha" \
-    -H "Accept: application/vnd.github.raw" -o "$dest"
+# ---------------------------------------------------------------- зависимости
+install_toolchain() {
+  if /tmp/buildenv/bin/cmake --version >/dev/null 2>&1 && /tmp/buildenv/bin/ninja --version >/dev/null 2>&1; then
+    ok "cmake/ninja уже есть: $(/tmp/buildenv/bin/cmake --version | head -1)"
+    return
+  fi
+  [ "$CHECK" = 1 ] && { miss "нет cmake/ninja в /tmp/buildenv"; return; }
+  say "cmake + ninja (в /tmp/buildenv; apt без root недоступен)"
+  python3 -m venv /tmp/buildenv
+  /tmp/buildenv/bin/pip -q install --disable-pip-version-check cmake ninja
+  ok "$(/tmp/buildenv/bin/cmake --version | head -1), ninja $(/tmp/buildenv/bin/ninja --version)"
 }
 
+# ---------------------------------------------------------------- Godot 4.7.2
+# Источник — Creative36711/synapse, tools/godot/dist: два xz-куска + SwiftShader.
+# download.blender.org и release-assets недоступны, а codeload/api.github.com — да.
+GODOT_DIR="$WORK/godotbin"
+GODOT_BIN="$GODOT_DIR/godot"
+SYNAPSE_REPO="${SYNAPSE_REPO:-Creative36711/synapse}"
+gh_blob() {  # owner/repo path dest
+  local api="https://api.github.com/repos/$1/contents/$2"
+  local sha
+  sha=$(curl -sSL "$api" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')
+  curl -sSL -H 'Accept: application/vnd.github.raw' \
+    "https://api.github.com/repos/$1/git/blobs/$sha" -o "$3"
+}
 install_godot() {
   if [ -x "$GODOT_BIN" ]; then ok "Godot уже есть: $($GODOT_BIN --version 2>/dev/null | tail -1)"; return; fi
   [ "$CHECK" = 1 ] && { miss "Godot нет ($GODOT_BIN)"; return; }
@@ -51,57 +51,76 @@ install_godot() {
   say "Godot 4.7.2 + SwiftShader (~66 МБ)"
   local base="tools/godot/dist"
   gh_blob "$SYNAPSE_REPO" "$base/SHA256SUMS" "$GODOT_DIR/SHA256SUMS"
+  local part
   for part in 00 01; do
-    gh_blob "$SYNAPSE_REPO" "$base/godot-linux-x86_64.xz.part-$part" "$GODOT_DIR/part-$part"
-    echo "    скачан кусок $part"
+    gh_blob "$SYNAPSE_REPO" "$base/godot-linux-x86_64.xz.part-$part" "$GODOT_DIR/part-$part.xz"
+    printf '    скачан кусок %s\n' "$part"
   done
-  # Имена в SHA256SUMS длинные, у нас файлы короткие — сверяем по парам
-  # «ожидаемый хеш ↔ наш файл», а не подменой имён в sed.
-  local want0 want1
-  want0=$(grep 'part-00' "$GODOT_DIR/SHA256SUMS" | cut -d' ' -f1)
-  want1=$(grep 'part-01' "$GODOT_DIR/SHA256SUMS" | cut -d' ' -f1)
-  echo "$want0  $GODOT_DIR/part-00" | sha256sum -c -
-  echo "$want1  $GODOT_DIR/part-01" | sha256sum -c -
-  cat "$GODOT_DIR"/part-* > "$GODOT_DIR/g.xz"
-  xz -dc "$GODOT_DIR/g.xz" > "$GODOT_BIN"
-  chmod +x "$GODOT_BIN"
-  local want
-  want=$(grep 'godot (uncompressed)' "$GODOT_DIR/SHA256SUMS" | cut -d' ' -f1)
-  echo "$want  $GODOT_BIN" | sha256sum -c -
-  gh_blob "$SYNAPSE_REPO" "$base/swiftshader-linux-x86_64.tar.xz" "$GODOT_DIR/sw.tar.xz"
-  tar -xf "$GODOT_DIR/sw.tar.xz" -C "$GODOT_DIR"
-  rm -f "$GODOT_DIR"/part-* "$GODOT_DIR/g.xz" "$GODOT_DIR/sw.tar.xz" "$GODOT_DIR/sums.txt"
-  ok "Godot: $($GODOT_BIN --version | tail -1)"
+  # SHA256SUMS подписывает три вещи: две части, склеенный .xz и распакованный
+  # бинарник. Имена в файле не совпадают с нашими — сверяем по хешу.
+  python3 - "$GODOT_DIR" <<'PYEOF'
+import hashlib, sys, os
+d = sys.argv[1]
+want = {}
+for line in open(os.path.join(d, "SHA256SUMS"), encoding="utf-8"):
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    h, _, name = line.partition("  ")
+    want[name.strip()] = h
+def sha(p):
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+for name, part in (("godot-linux-x86_64.xz.part-00", "part-00.xz"),
+                   ("godot-linux-x86_64.xz.part-01", "part-01.xz")):
+    got = sha(os.path.join(d, part))
+    if got != want.get(name):
+        sys.exit(f"часть {part}: {got} != {want.get(name)}")
+print("    части сходятся")
+PYEOF
+  [ $? -ne 0 ] && { miss "части не сошлись"; return; }
+  ( cd "$GODOT_DIR" && cat part-00.xz part-01.xz > godot.xz ) || return
+  # SHA256SUMS не содержит хеша склейки — сверяем только части (выше) и
+  # РАСПАКОВАННЫЙ бинарник (ниже), это и есть настоящая проверка содержимого.
+  ( cd "$GODOT_DIR" && xz -d -f godot.xz ) || return
+  python3 - "$GODOT_DIR" <<'PYEOF'
+import hashlib, sys, os
+d = sys.argv[1]
+want = {}
+for line in open(os.path.join(d, "SHA256SUMS"), encoding="utf-8"):
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    h, _, name = line.partition("  ")
+    want[name.strip()] = h
+h = hashlib.sha256()
+with open(os.path.join(d, "godot"), "rb") as f:
+    for chunk in iter(lambda: f.read(1 << 20), b""):
+        h.update(chunk)
+exp = want.get("godot (uncompressed)")
+if h.hexdigest() != exp:
+    sys.exit(f"бинарник: {h.hexdigest()} != {exp}")
+print("    бинарник сходится")
+PYEOF
+  [ $? -ne 0 ] && { miss "бинарник не сошёлся"; return; }
+  mv "$GODOT_DIR/godot" "$GODOT_BIN" 2>/dev/null || true
+  chmod +x "$GODOT_BIN" 2>/dev/null
+  ok "Godot: $($GODOT_BIN --version 2>/dev/null | tail -1)"
 }
 
-# Запуск Godot с рендером на CPU (SwiftShader). Без этих переменных движок
-# падает на «could not initialize the Vulkan context».
+# Запуск Godot с SwiftShader (GPU в песочнице нет; --headless кадров не рисует)
 godot_run() {
   VK_ICD_FILENAMES="$GODOT_DIR/vk_swiftshader_icd.json" \
   LD_LIBRARY_PATH="$GODOT_DIR:${LD_LIBRARY_PATH:-}" \
   "$GODOT_BIN" "$@"
 }
 
-# ------------------------------------------------------- Python импортёра
-# В дереве игры venv импортёра лежит в workspace/retail-work/tools, а не в
-# /tmp: его переживают только файлы внутри репозитория.
-install_importer_python() {
-  local venv="${1:?нужен путь}"
-  if [ -x "$venv/bin/python" ] && "$venv/bin/python" -c 'import PIL' 2>/dev/null; then
-    ok "venv импортёра уже есть: $venv"; return
-  fi
-  [ "$CHECK" = 1 ] && { miss "нет venv импортёра: $venv"; return; }
-  say "Python-окружение импортёра (Pillow, fonttools, defusedxml)"
-  python3 -m venv "$venv"
-  "$venv/bin/pip" -q install --disable-pip-version-check Pillow fonttools defusedxml
-  ok "$("$venv/bin/python" -c 'import PIL; print("Pillow", PIL.__version__)')"
-}
-
 # ------------------------------------------------------------- Blender (bpy)
-# download.blender.org в песочнице недоступен, зато pypi.org открыт:
-# bpy==4.5.3 — это целый Blender 4.5.3 LTS как pip-модуль. Колесо требует
-# CPython 3.11 и линкуется с X11/GL, которых в песочнице нет — стабы
-# закрывают линковку, рендер идёт через Cycles на CPU.
+# download.blender.org недоступен, но bpy==4.5.3 есть на pypi: целый Blender
+# как модуль. Колесо требует CPython 3.11 и линкуется с X11/GL — стабы закрывают.
 BPY_VERSION="${BPY_VERSION:-4.5.3}"
 install_bpy() {
   local venv="$WORK/bpyenv" stubs="$WORK/bpystubs"
@@ -118,7 +137,6 @@ install_bpy() {
   pkg=$(ls -d "$venv"/lib/python*/site-packages/bpy | head -1)
   mkdir -p "$stubs"
   python3.11 "$HERE/bpy_stubs.py" "$pkg" "$stubs" >/dev/null
-  LD_LIBRARY_PATH="$stubs" "$venv/bin/python" -c 'import bpy; print("    Blender", bpy.app.version_string)'
   ok "bpy готов; запуск: LD_LIBRARY_PATH=$stubs $venv/bin/python"
 }
 
@@ -135,15 +153,21 @@ install_media() {
   ok "готово"
 }
 
+install_toolchain
 install_godot
-install_importer_python "$WORK/impvenv"
 install_media
 install_bpy
 
 cat <<EOF
 
 Готово. Дальше:
-  сборка дерева игры:  python3 tools/prepare.py --output /tmp/play
-  снимки рандомайзера: $HERE/shots.sh /tmp/play
-  хромакей:            $WORK/mediaenv/bin/python $HERE/cutout_chromakey.py in.png out.png --crop
+  движок:    tools/sandbox/build_engine.sh          # сборка (15+ мин, 2 ядра)
+  проверка:  tools/sandbox/build_engine.sh --check  # что уже собрано
+  Godot:     $GODOT_BIN --version
+  хромакей:  $WORK/mediaenv/bin/python $HERE/cutout_chromakey.py in.png out.png --crop
+
+Переменные для запуска игры (см. docs/RUNBOOK.md):
+  export ROTWK_INSTALL=/path/to/RotWK
+  export BFME2_INSTALL=/path/to/BFME2
+  godot_run --path upstream/godot
 EOF
