@@ -69,6 +69,33 @@ class TreeFreshnessTests(unittest.TestCase):
         self._published('v0.4.0')
         self.assertTrue(engine._tree_is_stale(self.root, echo=lambda _l: None))
 
+    def test_prepare_passes_its_opener_and_never_touches_the_network(self):
+        # Дефект, который тут закреплён: _tree_is_stale вызывался без opener, и
+        # step_prepare в тестах ходил в настоящую сеть — тест проверял бы не то,
+        # что задумано, а иногда и просто падал по таймауту.
+        self._write_version('v0.3.0')
+        seen = []
+
+        def opener(request, timeout=None):
+            seen.append(request.full_url)
+            payload = (MANIFEST % ('v0.9.9', 'a' * 64)).encode('utf-8')
+
+            class Response:
+                def __enter__(self_inner):
+                    return self_inner
+
+                def __exit__(self_inner, *info):
+                    return False
+
+                def read(self_inner, limit=None):
+                    return payload
+
+            return Response()
+
+        stale = engine._tree_is_stale(self.root, echo=lambda _l: None, opener=opener)
+        self.assertTrue(stale)
+        self.assertEqual(len(seen), 1, 'opener из step_prepare должен дойти до проверки')
+
     def test_no_published_version_keeps_the_tree(self):
         self._write_version('v0.3.0')
         self._published(None)

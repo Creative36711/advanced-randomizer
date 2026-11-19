@@ -107,16 +107,25 @@ def write_zip(tree: Path, archive: Path) -> int:
     return archive.stat().st_size
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The command line, kept separate so tests can check flags without running."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True,
                         help='the pinned OpenBFME source zip (same commit as tools/prepare.py)')
+    parser.add_argument(
+        '--url-tag',
+        help='release tag used in the download path when the version carries a '
+             'suffix (tree-v0.3.0-main-ab12cd34.zip lives under the v0.3.0 tag)')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--version', required=True, help='tag or build id in the manifest')
     parser.add_argument('--url-base',
                         default='https://github.com/Creative36711/advanced-randomizer/releases/download',
                         help='where the archive will be downloadable')
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -148,7 +157,7 @@ def main() -> int:
         'schema': 'advanced-randomizer.tree',
         'schemaVersion': 1,
         'version': args.version,
-        'url': f'{args.url_base}/{args.version}/{archive.name}',
+        'url': f'{args.url_base}/{args.url_tag or args.version}/{archive.name}',
         'sha256': digest.hexdigest(),
         'size': size,
     }
