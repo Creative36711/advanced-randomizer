@@ -903,6 +903,17 @@ class BuilderTests(TempCase):
             names = [line.split("/", 1)[1] for line in header]
             self.assertEqual(names[0], names[1], f"{patch.name}: путь --- и +++ разный")
 
+    def test_the_fords_entry_count_matches_the_rules(self) -> None:
+        # 335 + 56 + 5 = 396 было неверно дважды: 335 считала четыре строки,
+        # которых ни одно правило не даёт, а 5 обещали четыре AI-библиотеки
+        # там, где профиль объявляет две. Итог сходился на 404 вместо 394 и
+        # валил аудит на любой чистой установке BFME2 1.06.
+        repo = Path(__file__).resolve().parents[3]
+        patch = (repo / "patches" / "upstream"
+                 / "0004-fords-entry-count-is-394.patch").read_text(encoding="utf-8")
+        self.assertIn("MEN_FORDS_SOURCE_ENTRY_COUNT = 331 + 7 + 56", patch)
+        self.assertIn("-MEN_FORDS_SOURCE_ENTRY_COUNT = 335 + 56 + 5", patch)
+
     def test_the_shortfall_patch_names_the_rule(self) -> None:
         # «found 394» не говорило, ЧЕГО не хватает. Патч 0003 считает записи
         # по правилам и печатает недостачу по имени.
