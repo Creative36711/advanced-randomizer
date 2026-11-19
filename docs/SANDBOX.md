@@ -82,3 +82,14 @@ LD_LIBRARY_PATH=/tmp/bpystubs /tmp/bpyenv/bin/python your_script.py
 краем (28 % прозрачных, 0 % полупрозрачного ореола, без зелёной каймы).
 
 Когда рисовать SVG, а когда генерировать изображение — `docs/ART-PIPELINE.md`.
+
+## Проверка установки игры без её передачи
+
+```bash
+python3 tools/retail_fingerprint.py "D:/Games/BFME2" --json bfme2.json
+python3 tools/retail_fingerprint.py "D:/RotWK" --game rotwk --sizes-only
+```
+
+Сверяет каждый архив с `contracts/*-archives.json` (путь, размер, md5) и
+называет версию игры по числам. Это заменяет передачу гигабайтов: отчёт —
+несколько килобайт. Подробнее — `docs/TESTING-WITHOUT-FILES.md`.
