@@ -1,0 +1,73 @@
+name: Launcher on Windows
+
+# The launcher is PowerShell + WPF, and until now it was only ever *read* by a
+# test suite in a Linux sandbox. Every defect that reached a player - a variable
+# that did not exist, a function that was never written, an argument in the
+# wrong position - would have been caught by one run on Windows.
+#
+# This job is that run: the real window is built and opened on windows-latest.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'launcher/start/**'
+      - '.github/workflows/launcher-windows.yml'
+  pull_request:
+    paths:
+      - 'launcher/start/**'
+      - '.github/workflows/launcher-windows.yml'
+  workflow_dispatch:
+
+jobs:
+  window:
+    name: Real window on real Windows
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Which PowerShell is this?
+        shell: pwsh
+        run: |
+          $PSVersionTable | Format-List
+          # The player's machine runs Windows PowerShell 5.1, and the launcher
+          # is written for it. Testing only on 7 would test a program nobody
+          # runs.
+          Get-Command powershell.exe | Format-List Source
+
+      - name: Parse the launcher as Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $path = 'launcher/start/launcher.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path $path), [ref]$tokens, [ref]$errors)
+          if ($errors -and $errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Host "::error::line $($_.Extent.StartLineNumber): $($_.Message)" }
+            exit 1
+          }
+          Write-Host 'launcher.ps1 parses under Windows PowerShell 5.1'
+
+      - name: Engine tests
+        shell: pwsh
+        run: |
+          python -m unittest discover -s launcher/start/tests -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Open the window and drive it
+        shell: powershell
+        run: |
+          & launcher/start/tests/window_smoke.ps1
+          exit $LASTEXITCODE
+
+      - name: Upload the window's own crash log, if it wrote one
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher-window-log
+          path: |
+            %LOCALAPPDATA%/AdvancedRandomizer/*.log
+          if-no-files-found: ignore

@@ -551,10 +551,35 @@ class LaneTests(TempCase):
         self.assertNotIn("convert", plan)
         self.assertLess(plan.index("layered"), plan.index("full"))
 
+        # Neither the explicit path nor the RotWK folder carries the overlay.
+        # seed_tree() also builds a "layered" folder that does, so it must be
+        # replaced as well - otherwise this asserts the wrong thing.
         settings.patch202_root = self.root / "nothing-here"
+        settings.rotwk_install = make_install(self.root / "plain-201", "rotwk")
         plan = engine.first_run_plan(settings)
         self.assertIn("convert", plan)
         self.assertNotIn("full", plan)
+        # The helper really is the thing being tested here:
+        self.assertIsNone(engine.patch202_root(settings))
+
+    def test_2_02_is_found_inside_the_201_folder(self) -> None:
+        # 2.02 is a fan mod installed by replacing files in the RotWK 2.01
+        # folder - so that folder IS the overlay. Asking for a separate path
+        # was wrong.
+        settings = self.seed_tree()
+        settings.patch202_root = None
+        modded = make_patch202(make_install(self.root / "modded-201", "rotwk"))
+        settings.rotwk_install = modded
+        self.assertEqual(engine.patch202_root(settings), modded)
+        plan = engine.first_run_plan(settings)
+        self.assertIn("full", plan)
+
+    def test_an_explicit_2_02_path_still_wins(self) -> None:
+        settings = self.seed_tree()
+        explicit = make_patch202(self.root / "elsewhere")
+        settings.patch202_root = explicit
+        settings.rotwk_install = make_install(self.root / "plain-201", "rotwk")
+        self.assertEqual(engine.patch202_root(settings), explicit)
 
     def test_without_the_overlay_the_full_step_refuses_before_any_work(self) -> None:
         settings = self.seed_tree()

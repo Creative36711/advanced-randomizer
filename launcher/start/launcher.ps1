@@ -288,8 +288,10 @@ $form.Controls.Add((New-Label -Text "Случайные юниты, палант
 $rows = @(
     @{ Key = "install-root"; Title = "Папка лаунчера"; Hint = "движок, контент и кэш конвертации"; Y = 100 },
     @{ Key = "bfme2-install"; Title = "BFME2 1.06"; Hint = "ваша папка игры; файлы не копируются"; Y = 160 },
-    @{ Key = "rotwk-install"; Title = "RotWK 2.01"; Hint = "необязательно; нужно для полного контента RotWK"; Y = 220 },
-    @{ Key = "patch202-root"; Title = "Патч 2.02"; Hint = "необязательно; папка с __patch202.big (≈1,26 ГБ)"; Y = 280 }
+    # No "Патч 2.02" row: 2.02 is a fan mod installed by replacing files in the
+    # RotWK 2.01 folder, like every other mod there. If those files are present,
+    # the launcher finds them by itself; asking for a second path was wrong.
+    @{ Key = "rotwk-install"; Title = "RotWK 2.01"; Hint = "папка игры; если в ней стоит 2.02, он найдётся сам"; Y = 220 }
 )
 
 foreach ($row in $rows) {
@@ -785,8 +787,7 @@ function Read-Status {
         $fieldMap = @(
             @("install-root", "--install-root"),
             @("bfme2-install", "--bfme2-install"),
-            @("rotwk-install", "--rotwk-install"),
-            @("patch202-root", "--patch202-root")
+            @("rotwk-install", "--rotwk-install")
         )
         foreach ($field in $fieldMap) {
             $value = Get-FieldText -Tag $field[0]
@@ -849,9 +850,6 @@ function Refresh-Status {
     if (-not (Get-FieldText -Tag "rotwk-install") -and $info.detectedRotwk) {
         Set-FieldText -Tag "rotwk-install" -Value $info.detectedRotwk
     }
-    if (-not (Get-FieldText -Tag "patch202-root") -and $info.detectedPatch202) {
-        Set-FieldText -Tag "patch202-root" -Value $info.detectedPatch202
-    }
     if (-not (Get-FieldText -Tag "seed") -and $info.seed) {
         Set-FieldText -Tag "seed" -Value $info.seed
     }
@@ -902,7 +900,6 @@ function Save-Fields {
         @("install-root", "--install-root"),
         @("bfme2-install", "--bfme2-install"),
         @("rotwk-install", "--rotwk-install"),
-        @("patch202-root", "--patch202-root"),
         @("seed", "--seed")
     )
     foreach ($field in $fields) {
