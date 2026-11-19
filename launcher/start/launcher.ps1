@@ -42,6 +42,8 @@ $script:progressStream = $null
 $script:progressReader = $null
 $script:progressBuffer = ""
 $script:lastEngineLine = ""
+$script:currentProcessId = 0
+$script:cancelRequested = $false
 $script:lastEngineWasError = $false
 
 try {
@@ -356,6 +358,14 @@ $form.Controls.Add($setup)
 $quit = New-Button -Text "Выход" -X 760 -Y 440 -Width 140 -Height 56
 $form.Controls.Add($quit)
 
+# Shown only while a step runs, in place of "Выход". A player who wants out
+# during a long download must be able to say so and be obeyed.
+$stop = New-Button -Text "Остановить" -X 760 -Y 440 -Width 140 -Height 56
+$stop.Visible = $false
+$stop.BackColor = [System.Drawing.Color]::FromArgb(120, 40, 36)
+$stop.ForeColor = [System.Drawing.Color]::White
+$form.Controls.Add($stop)
+
 $full = New-Button -Text "Полный контент RotWK (2.02)" -X 30 -Y 504 -Width 870 -Height 32
 $full.Visible = $false
 $form.Controls.Add($full)
@@ -605,8 +615,13 @@ function Invoke-Engine {
         # every following click returned 1 from the guard - a save that
         # "failed" without a single line of explanation.
         $script:busy = $true
+        $script:cancelRequested = $false
         $play.Enabled = $false
         $setup.Enabled = $false
+        $quit.Visible = $false
+        $stop.Visible = $true
+        $stop.Enabled = $true
+        $stop.Text = "Остановить"
         Show-Progress -Caption (Get-StepCaption $Arguments) -Percent (-1)
         Show-Progress -Caption "Подготовка Python" -Percent (-1)
         $python = Ensure-BootstrapPython
@@ -641,6 +656,7 @@ function Invoke-Engine {
         # -PassThru emits the process object; that IS the value we want, so it
         # is assigned explicitly and never left to escape.
         $process = Start-Process @startArgs
+        $script:currentProcessId = [int]$process.Id
 
         # The child may not have created its log yet; wait for it instead of
         # letting FileMode::Open throw while the console window is hidden.
@@ -658,6 +674,10 @@ function Invoke-Engine {
         $started = Get-Date
         $lastTick = $started
         while (-not $process.HasExited) {
+            if ($script:cancelRequested) {
+                Stop-EngineTree -ProcessId ([int]$process.Id)
+                break
+            }
             Start-Sleep -Milliseconds 150
             [System.Windows.Forms.Application]::DoEvents()
             Read-NewLogLines -Reader $reader
@@ -722,6 +742,10 @@ function Invoke-Engine {
         # reached the engine.  This is what turned "unknown option --progress"
         # into "Готово. Запускаю игру." with no game.
         $engineStarted = (-not $process.HasExited) -or $hadError -or ($code -ne 0) -or (Test-Path -LiteralPath $script:progressFile -PathType Leaf)
+        if ($script:cancelRequested) {
+            [void](Write-Log "Шаг остановлен по вашей команде.")
+            return 0
+        }
         if (-not $engineStarted) {
             [void](Write-Log ("Движок не запустился: интерпретатор " + $python + " завершился, не выполнив engine.py."))
             [void](Write-Log "Проверьте, что путь к Python рабочий; лаунчер попробует другой при следующем запуске.")
@@ -746,8 +770,45 @@ function Invoke-Engine {
         Hide-Progress
         $form.Text = "Advanced Randomizer"
         $script:busy = $false
+        $script:currentProcessId = 0
+        $stop.Visible = $false
+        $quit.Visible = $true
+        $quit.Enabled = $true
         $setup.Enabled = $true
         $play.Enabled = $true
+    }
+}
+
+function Stop-EngineTree {
+    # taskkill /T kills the process AND its children: the engine spawns python,
+    # powershell, godot and the converter, and killing one leaves the rest
+    # holding the folder the launcher wants to delete.
+    param([int]$ProcessId)
+    if (-not $ProcessId) { return }
+    try {
+        $result = Start-Process -FilePath "taskkill.exe" -ArgumentList @("/PID", [string]$ProcessId, "/T", "/F") -NoNewWindow -Wait -PassThru
+        if ($result.ExitCode -eq 0) { return }
+    } catch { }
+    try {
+        $victim = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        if ($victim) { $victim.Kill() }
+    } catch { }
+}
+
+function Cancel-Engine {
+    # Called from the Stop button and from the window's close box. Both must
+    # work at any moment, including in the middle of a download - that was the
+    # complaint: the only way out was Ctrl+Alt+Del.
+    if (-not $script:busy) {
+        $form.Close()
+        return
+    }
+    $script:cancelRequested = $true
+    [void](Write-Log "Останавливаю… Текущий шаг будет прерван.")
+    $stop.Enabled = $false
+    $stop.Text = "Останавливаю"
+    if ($script:currentProcessId) {
+        Stop-EngineTree -ProcessId $script:currentProcessId
     }
 }
 
@@ -914,6 +975,20 @@ function Save-Fields {
 }
 
 $quit.Add_Click({ $form.Close() })
+$stop.Add_Click({ Cancel-Engine })
+
+# The window's own close box must work while a step runs. Without this the
+# close request was queued behind a busy loop and the only way out was
+# Ctrl+Alt+Del - the player reported exactly that.
+$form.Add_FormClosing({
+    param($sender, $eventArgs)
+    if ($script:busy) {
+        $script:cancelRequested = $true
+        if ($script:currentProcessId) {
+            Stop-EngineTree -ProcessId $script:currentProcessId
+        }
+    }
+})
 
 $play.Add_Click({
     if (-not (Get-FieldText -Tag "install-root")) {
