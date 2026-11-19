@@ -177,11 +177,37 @@ jobs:
       - name: Attach the tree to the release
         # latest/download/tree.json is what the launcher reads, so the tree must
         # be attached to the same release the rest of the download comes from.
-        if: startsWith(github.ref, 'refs/tags/v')
+        #
+        # И это не только про теги. Пока пакет обновлялся ТОЛЬКО по тегу, пуш в
+        # main собирал архив, который никто не скачивал: игрок получал дерево,
+        # собранное до исправления, видел ту же ошибку и решал, что не починили.
+        # Поэтому на main пакет тоже публикуется — в последний релиз, откуда
+        # его берёт latest/download. Версия в имени файла при этом меняется,
+        # так что подмена честная: тот же тег, другой собранный пакет.
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            # Последний ОПУБЛИКОВАННЫЙ релиз — тот, на который указывает
+            # latest/download. Именно `/releases/latest` из API, а не «первый в
+            # списке»: gh release list такого поля не отдаёт (проверено —
+            # `--json` там нет), а latest — это ровно тот тег, куда смотрит
+            # ссылка лаунчера.
+            tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)
+            if [ -z "$tag" ]; then
+              echo "::error title=Публикация пакета не удалась::нет ни одного релиза, к которому можно приложить дерево"
+              exit 1
+            fi
+            echo "Публикую собранное дерево в релиз $tag (из main)"
+          fi
           gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --generate-notes
           gh release upload "$tag" dist/tree/tree.json dist/tree/tree-*.zip --clobber
+          # Проверяем результат, а не факт команды: именно расхождение между
+          # «собрали» и «опубликовали» и стоило игроку лишнего прогона.
+          echo "теперь в релизе:"
+          gh release view "$tag" --json assets \
+            --jq '.assets[] | select(.name|startswith("tree")) | "\(.name) \(.size) байт"'
