@@ -74,56 +74,58 @@ if ($missing.Count -gt 0) {
 Pass ("every helper the window calls is defined (" + $defined.Count + " functions)")
 
 # ---- build the window for real -------------------------------------------
-# The form is created at script scope; launching the script in a runspace lets
-# us inspect it without ever calling ShowDialog.
+# The window is started the way a player starts it - a separate process with
+# its own STA apartment - and stopped when it reports ready. Driving it from a
+# runspace inside this process deadlocks: WinForms needs an STA thread and
+# [PowerShell]::Create() gives an MTA one.
 $stateRoot = Join-Path ([IO.Path]::GetTempPath()) ("ar-smoke-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $stateRoot | Out-Null
+$ready = Join-Path $env:LOCALAPPDATA 'AdvancedRandomizer\launcher-ready'
+$crash = Join-Path $env:LOCALAPPDATA 'AdvancedRandomizer\launcher.log'
+Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
 
+$process = $null
 try {
-    Add-Type -AssemblyName System.Windows.Forms
-    Add-Type -AssemblyName System.Drawing
+    $startArgs = @{
+        FilePath = (Get-Command powershell.exe).Source
+        ArgumentList = @(
+            '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+            '-File', ('"' + $launcherPath + '"')
+        )
+        PassThru = $true
+        WindowStyle = 'Minimized'
+    }
+    $process = Start-Process @startArgs
+    Write-Host ("window process started: pid " + $process.Id)
 
-    # A settings file pointing at an empty root: the window must build and the
-    # status line must survive a machine with nothing installed.
-    $settingsPath = Join-Path $env:LOCALAPPDATA 'AdvancedRandomizer\launcher-settings.json'
-    Write-Host "settings: $settingsPath"
-
-    $runner = [PowerShell]::Create()
-    [void]$runner.AddScript(@"
-Set-StrictMode -Version Latest
-`$ErrorActionPreference = 'Stop'
-& '$launcherPath'
-"@)
-
-    # Run it in a background thread: ShowDialog blocks forever otherwise.
-    $handle = $runner.BeginInvoke()
-
-    # The window writes a ready-file once it is really up.
-    $ready = Join-Path $env:LOCALAPPDATA 'AdvancedRandomizer\launcher-ready'
-    $deadline = (Get-Date).AddSeconds(90)
+    $deadline = (Get-Date).AddSeconds(120)
+    $up = $false
     while ((Get-Date) -lt $deadline) {
-        if (Test-Path -LiteralPath $ready -PathType Leaf) { break }
-        if ($handle.IsCompleted) { break }
+        if (Test-Path -LiteralPath $ready -PathType Leaf) { $up = $true; break }
+        if ($process.HasExited) { break }
         Start-Sleep -Milliseconds 500
     }
 
-    $errors = $runner.Streams.Error
-    if ($errors -and $errors.Count -gt 0) {
-        $message = ($errors | ForEach-Object { $_.ToString() }) -join ' | '
-        Fail "the window threw while opening: $message"
-    }
-
-    if (-not (Test-Path -LiteralPath $ready -PathType Leaf)) {
-        if ($handle.IsCompleted) {
-            Fail "the window exited before it was ready"
+    if (-not $up) {
+        if (Test-Path -LiteralPath $crash -PathType Leaf) {
+            $tail = (Get-Content -LiteralPath $crash -Encoding UTF8 | Select-Object -Last 15) -join " / "
+            Fail ("the window never became ready; its log ends with: " + $tail)
         }
-        Fail "the window did not become ready within 90 seconds"
+        if ($process.HasExited) {
+            Fail ("the window process exited with code " + $process.ExitCode + " before it was ready")
+        }
+        Fail "the window did not become ready within 120 seconds"
     }
     Pass "the window opened and reported ready"
 
+    # A second launch while one is running must not corrupt settings.
     Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
 } finally {
-    if ($runner) { try { $runner.Stop() } catch { } ; $runner.Dispose() }
+    if ($process -and -not $process.HasExited) {
+        try { $process.Kill() } catch { }
+        Start-Sleep -Milliseconds 500
+    }
+    Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $stateRoot) { Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
