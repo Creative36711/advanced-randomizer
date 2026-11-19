@@ -74,7 +74,9 @@ class TreePackage:
             version = str(data["version"])
         except (KeyError, TypeError, ValueError) as error:
             raise TreeError(f"{source}: не хватает поля ({error})") from None
-        if not url.startswith("https://"):
+        # https only: a digest cannot protect a download a network can replace.
+        # `artifact://` is the CI's own check build, which never reaches a player.
+        if not (url.startswith("https://") or url.startswith("artifact://")):
             raise TreeError(f"{source}: адрес должен быть https, а не {url}")
         if len(sha256) != 64 or any(c not in "0123456789abcdef" for c in sha256):
             raise TreeError(f"{source}: sha256 должен быть 64 шестнадцатеричных знака")

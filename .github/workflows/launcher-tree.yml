@@ -64,12 +64,21 @@ jobs:
       - name: Build the tree package
         shell: bash
         run: |
+          # On a pull request GITHUB_REF_NAME is "123/merge" and there is no
+          # release to point at, so the url base names this very artifact. The
+          # install step below is what matters here anyway: it proves the
+          # archive unpacks, not where it will later be hosted.
           version="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_TYPE}" = "branch" ]; then
+            url_base="artifact://tree-package"
+          else
+            url_base="https://github.com/${GITHUB_REPOSITORY}/releases/download"
+          fi
           python3 tools/build_tree_package.py \
             --source source.zip \
             --output dist/tree \
             --version "$version" \
-            --url-base "https://github.com/${GITHUB_REPOSITORY}/releases/download"
+            --url-base "$url_base"
           ls -l dist/tree
 
       - name: Install the package the way the launcher does
@@ -99,6 +108,8 @@ jobs:
                   return None
 
           def opener(request, timeout=None):
+              # Any address works here: the manifest and the archive are already
+              # in hand, and the point is the install path, not the hosting.
               return Response(manifest.encode() if request.full_url.endswith("tree.json") else payload)
 
           lines = []

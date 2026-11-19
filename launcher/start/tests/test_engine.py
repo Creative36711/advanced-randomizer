@@ -518,6 +518,23 @@ class TreePackageTests(unittest.TestCase):
             tree_package.read_manifest(text)
         self.assertIn("https", str(caught.exception))
 
+    def test_an_artifact_address_is_the_only_non_https_exception(self) -> None:
+        # The CI check build points at its own artifact; a player's launcher
+        # must still refuse anything that is not https.
+        import tree_package
+
+        ok = json.dumps(
+            {"url": "artifact://tree-package/tree.zip", "sha256": "a" * 64,
+             "size": 1, "version": "v1"}
+        )
+        self.assertEqual(tree_package.read_manifest(ok).version, "v1")
+        for bad in ("http://example.com/a.zip", "file:///etc/passwd", "ftp://x/y"):
+            with self.subTest(url=bad):
+                with self.assertRaises(tree_package.TreeError):
+                    tree_package.read_manifest(
+                        json.dumps({"url": bad, "sha256": "a" * 64, "size": 1, "version": "v"})
+                    )
+
     def test_a_truncated_archive_is_named_not_unpacked(self) -> None:
         import tree_package
 
@@ -675,6 +692,20 @@ class BuilderTests(TempCase):
             hashlib.sha256(first.read_bytes()).hexdigest(),
             hashlib.sha256(second.read_bytes()).hexdigest(),
         )
+
+    def test_a_pull_request_ref_becomes_a_usable_file_name(self) -> None:
+        # GITHUB_REF_NAME on a pull request is "123/merge": the slash turned the
+        # archive path into a missing directory and the build died with a
+        # FileNotFoundError that named nothing.
+        import importlib.util
+
+        builder_path = Path(__file__).resolve().parents[3] / "tools" / "build_tree_package.py"
+        spec = importlib.util.spec_from_file_location("build_tree_package", builder_path)
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        self.assertEqual(builder.safe_version("123/merge"), "123-merge")
+        self.assertEqual(builder.safe_version("v1.2.3"), "v1.2.3")
+        self.assertEqual(builder.safe_version(""), "build")
 
     def test_a_source_without_our_patch_is_refused(self) -> None:
         # The builder applies patches itself; if a patch stops applying, the

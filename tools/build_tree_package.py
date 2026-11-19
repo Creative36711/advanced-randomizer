@@ -67,6 +67,18 @@ def assemble(source: Path, destination: Path) -> None:
         tree.rmdir()
 
 
+def safe_version(version: str) -> str:
+    """A version that can be a file name.
+
+    A pull request's GITHUB_REF_NAME is "123/merge": the slash made the zip
+    path a directory that does not exist, and the build failed with a
+    FileNotFoundError that named nothing.
+    """
+
+    cleaned = ''.join(c if c.isalnum() or c in '._-' else '-' for c in version).strip('-')
+    return cleaned or 'build'
+
+
 def write_zip(tree: Path, archive: Path) -> int:
     """Deterministic zip with one top-level folder; returns its size."""
 
@@ -113,7 +125,10 @@ def main() -> int:
             + '\n  '.join(problems)
         )
 
-    archive = output / f'tree-{args.version}.zip'
+    version = safe_version(args.version)
+    if version != args.version:
+        print(f'версия для имени файла: {version} (было {args.version})')
+    archive = output / f'tree-{version}.zip'
     size = write_zip(staging, archive)
     digest = hashlib.sha256()
     with archive.open('rb') as handle:
