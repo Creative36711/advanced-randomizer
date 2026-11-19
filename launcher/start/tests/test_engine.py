@@ -780,6 +780,47 @@ class EntryPointTests(unittest.TestCase):
         self.assertNotIn("$play.Enabled = $false", body)
         self.assertIn("$play.Enabled = -not $script:busy", body)
 
+    def test_the_window_closes_while_a_step_is_running(self) -> None:
+        # Log #8: a download hung and the window could not be closed - not the
+        # X, not "Выход". The player killed it in Task Manager. The close box
+        # must stop the work and close, at any moment.
+        text = self.read_bytes("launcher.ps1").decode("utf-8-sig")
+        self.assertIn("$form.Add_FormClosing({", text)
+        start = text.index("$form.Add_FormClosing({")
+        body = text[start : start + 600]
+        self.assertIn("$script:cancelRequested = $true", body)
+        self.assertIn("Stop-EngineTree", body)
+
+    def test_a_running_step_can_be_stopped_from_a_button(self) -> None:
+        # "Остановить" replaces "Выход" while a step runs, so the player has a
+        # way out that does not need the close box at all.
+        text = self.read_bytes("launcher.ps1").decode("utf-8-sig")
+        self.assertIn("$stop.Add_Click({ Cancel-Engine })", text)
+        self.assertIn("$stop.Visible = $true", text)
+        self.assertIn("$quit.Visible = $false", text)
+        # ...and it goes away again when the step ends.
+        self.assertIn("$stop.Visible = $false", text)
+        self.assertIn("$quit.Visible = $true", text)
+
+    def test_stopping_kills_the_whole_process_tree(self) -> None:
+        # Killing only the Python engine left Godot and the converter running;
+        # the player then had two windows that would not close.
+        text = self.read_bytes("launcher.ps1").decode("utf-8-sig")
+        start = text.index("function Stop-EngineTree {")
+        body = text[start : text.index("function Cancel-Engine {")]
+        self.assertIn('"/T"', body)
+        self.assertIn('"/F"', body)
+
+    def test_the_wait_loop_honours_cancel_and_forgets_the_child(self) -> None:
+        text = self.read_bytes("launcher.ps1").decode("utf-8-sig")
+        self.assertIn("$script:currentProcessId = [int]$process.Id", text)
+        start = text.index("while (-not $process.HasExited) {")
+        body = text[start : start + 400]
+        self.assertIn("$script:cancelRequested", body)
+        self.assertIn("Stop-EngineTree", body)
+        # A cancelled step is the player's decision, not an error to report.
+        self.assertIn('"Шаг остановлен по вашей команде."', text)
+
     def test_play_prepares_and_launches_from_one_click(self) -> None:
         text = self.read_bytes("launcher.ps1").decode("utf-8-sig")
         start = text.index("$play.Add_Click({")
