@@ -1,9 +1,11 @@
 """Assemble a playable OpenBFME source tree without vendoring the port or game data."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -94,9 +96,68 @@ def main():
             print(f'  изменено файлов: {len(changed)}', flush=True)
         if (ROOT / 'game').is_dir():
             shutil.copytree(ROOT / 'game', tree / 'game', dirs_exist_ok=True)
+        stamp_release_identity(tree)
         tree.rename(dest)
     print(f'Готово: {dest}')
     print(f'Открывать в Godot 4.7.2: {dest / "game/project.godot"}')
+
+
+# Импортёр штампует происхождение конвертации в provenance-манифест и ОТКАЗЫВАЕТ,
+# если дерево не может назвать свой точный коммит: `_importer_recipe_report()`
+# ищет `release-identity.json`, а без него требует, чтобы собранное дерево само
+# было корнем git-репозитория (см. `git_revision_at_exact_root`). У игрока git
+# нет по правилу, и `git rev-parse` в чужом каталоге вернул бы чужой коммит —
+# поэтому дерево обязано нести штамп. Без него сборка пака падает на аудите:
+#   "retail provenance importer recipe has no exact git commit"
+RELEASE_IDENTITY_SCHEMA = 'openbfme.bundled-source-identity'
+RELEASE_IDENTITY_SCHEMA_VERSION = 1
+
+
+def _git(*args):
+    """Вывод git из НАШЕГО репозитория или None, если git недоступен."""
+    try:
+        result = subprocess.run(
+            ['git', '-C', str(ROOT), *args],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def stamp_release_identity(tree):
+    """Записать происхождение дерева — так, чтобы его можно было проверить.
+
+    Дерево — это наш репозиторий (патчи, game/) плюс закреплённый архив
+    upstream. Коммит берётся у НАШЕГО репозитория: он и есть автор того, что
+    в дереве отличается от upstream. Когда git недоступен (так собирает CI из
+    архива), штамп всё равно пишется, но честно помечается как непроверенный:
+    `sourceClean: false` заставит импортёр отказать, а не соврать.
+    """
+    commit = _git('rev-parse', 'HEAD')
+    dirty = bool(_git('status', '--porcelain'))
+    source_clean = commit is not None and not dirty
+    identity = {
+        'schema': RELEASE_IDENTITY_SCHEMA,
+        'schemaVersion': RELEASE_IDENTITY_SCHEMA_VERSION,
+        'commit': commit,
+        'sourceClean': source_clean,
+        # Не часть схемы, но полезно человеку, который откроет файл.
+        'upstream': f'Open-BFME/openbfme-godot@{REV}',
+        'ourRepository': 'Creative36711/advanced-randomizer',
+        'stampedBy': 'tools/prepare.py',
+    }
+    (tree / 'release-identity.json').write_text(
+        json.dumps(identity, ensure_ascii=False, indent=2) + '\n', encoding='utf-8'
+    )
+    if commit is None:
+        print('  ВНИМАНИЕ: git недоступен — штамп собран без коммита, '
+              'и конвертация откажет на аудите происхождения.', flush=True)
+    elif dirty:
+        print('  ВНИМАНИЕ: рабочее дерево изменено — штамп помечен sourceClean=false.',
+              flush=True)
+    else:
+        print(f'  Происхождение: {commit[:12]} (чистое дерево)', flush=True)
 
 
 if __name__ == '__main__':
