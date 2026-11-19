@@ -40,6 +40,20 @@ MOD_FILES = (
 PATCH_EVIDENCE = ("game/src/core/game_state.gd", "retail_randomizer")
 
 
+def inside(base: Path, target: Path) -> bool:
+    """``target`` is ``base`` or below it, compared as paths and not as text.
+
+    The text form ``str(t).startswith(str(b) + "/")`` is wrong on Windows,
+    where str(Path) uses a backslash: every entry then "escapes" the folder and
+    nothing can be unpacked at all. That is how the Godot archive, every mod
+    package and this tree failed on the first Windows run.
+    """
+
+    base = base.resolve()
+    target = target.resolve()
+    return target == base or base in target.parents
+
+
 class TreeError(Exception):
     """The package cannot be trusted or used."""
 
@@ -146,7 +160,10 @@ def unpack(archive: Path, destination: Path) -> None:
             if ".." in relative.parts or relative.is_absolute():
                 raise TreeError(f"архив пишет вне папки лаунчера: {info.filename}")
             target = (destination / relative).resolve()
-            if not (target == destination or str(target).startswith(str(destination) + "/")):
+            # Compared as paths, never as strings with a hard-coded "/": on
+            # Windows str(Path) uses "\\", and every entry looked like it was
+            # escaping the folder - the player could not install anything.
+            if target != destination and destination not in target.parents:
                 raise TreeError(f"архив пишет вне папки лаунчера: {info.filename}")
             planned.append((info, relative))
             total += info.file_size
@@ -164,8 +181,6 @@ def unpack(archive: Path, destination: Path) -> None:
             shutil.rmtree(staging)
         for info, relative in planned:
             with zf.open(info) as src:
-                if not relative.parts:
-                    continue
                 if not relative.parts:
                     continue
                 target = staging / relative

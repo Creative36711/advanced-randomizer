@@ -42,7 +42,7 @@ def assemble(source: Path, destination: Path) -> None:
     with zipfile.ZipFile(source) as zf:
         for info in zf.infolist():
             target = (destination / info.filename).resolve()
-            if not str(target).startswith(str(destination.resolve())):
+            if not tree_package.inside(destination, target):
                 raise SystemExit(f'архив исходников пишет вне папки: {info.filename}')
             if info.is_dir():
                 target.mkdir(parents=True, exist_ok=True)

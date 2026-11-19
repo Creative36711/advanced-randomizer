@@ -563,6 +563,57 @@ class TreePackageTests(unittest.TestCase):
             self.assertFalse((destination / "tools").exists())
 
 
+class WindowsPathTests(unittest.TestCase):
+    """The containment check must not depend on the platform's separator.
+
+    On Windows str(Path) uses "\\", so a check written as
+    str(target).startswith(str(base) + "/") says every entry escapes. That
+    broke unpacking of the tree, Godot and every mod package at once - and it
+    passed on Linux, where the CI tests run, so the defect reached the player.
+    """
+
+    def test_a_child_is_inside_whatever_the_separator(self) -> None:
+        import tree_package
+
+        with tempfile.TemporaryDirectory() as scratch:
+            base = Path(scratch) / "openbfme"
+            child = base / "game" / "project.godot"
+            self.assertTrue(tree_package.inside(base, child))
+            self.assertTrue(tree_package.inside(base, base))
+
+    def test_a_sibling_is_not_inside(self) -> None:
+        import tree_package
+
+        with tempfile.TemporaryDirectory() as scratch:
+            base = Path(scratch) / "openbfme"
+            sibling = Path(scratch) / "openbfme-evil" / "x"
+            self.assertFalse(tree_package.inside(base, sibling))
+
+    def test_escapes_are_refused(self) -> None:
+        import tree_package
+
+        with tempfile.TemporaryDirectory() as scratch:
+            base = Path(scratch) / "openbfme"
+            self.assertFalse(tree_package.inside(base, Path(scratch) / "x"))
+            self.assertFalse(tree_package.inside(base, base / ".." / "x"))
+
+    def test_the_check_does_not_use_text_prefixes(self) -> None:
+        # The defect was in the comparison itself, so the source is checked:
+        # a future edit that reintroduces startswith(str(...)) on a path must
+        # fail here.  The docstring mentions the bad form on purpose, hence
+        # "target" in the same line rather than the bare pattern.
+        text = tree_package_path().read_text(encoding="utf-8")
+        offenders = [
+            line for line in text.splitlines()
+            if "startswith(str(" in line and "target" in line and not line.strip().startswith("#")
+        ]
+        self.assertEqual(offenders, [])
+
+
+def tree_package_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "tree_package.py"
+
+
 class PlainOpenBFMEGuardTests(TempCase):
     """A tree without our mod looks ready and plays a game without the randomizer."""
 

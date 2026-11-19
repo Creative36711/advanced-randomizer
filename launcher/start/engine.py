@@ -456,7 +456,7 @@ def extract_zip(archive: Path, destination: Path, *, label: str = "") -> None:
     with zipfile.ZipFile(archive) as zf:
         for info in zf.infolist():
             target = (destination / info.filename).resolve()
-            if not str(target).startswith(str(root)):
+            if not tree_package.inside(root, target):
                 raise LauncherError(
                     f"{label or archive.name}: архив пытается писать вне папки назначения."
                 )
@@ -501,7 +501,7 @@ def extract_7z(archive: Path, destination: Path, *, label: str = "", echo=print)
             names = archive_file.getnames()
             for name in names:
                 target = (destination / name).resolve()
-                if not str(target).startswith(str(destination.resolve())):
+                if not tree_package.inside(destination, target):
                     raise LauncherError(
                         f"{label}: архив пытается писать вне папки назначения."
                     )
@@ -557,7 +557,7 @@ def extract_tar_gz(archive: Path, destination: Path, *, label: str = "") -> None
     with tarfile.open(archive, "r:gz") as tf:
         for member in tf.getmembers():
             target = (destination / member.name).resolve()
-            if not str(target).startswith(str(root)):
+            if not tree_package.inside(root, target):
                 raise LauncherError(
                     f"{label or archive.name}: архив пытается писать вне папки назначения."
                 )
