@@ -4,7 +4,8 @@
 #
 #   tools/sandbox/build_engine.sh              # собрать (долго: 15+ мин на 2 ядрах)
 #   tools/sandbox/build_engine.sh --check      # что уже собрано
-#   tools/sandbox/build_engine.sh --core       # только ядро (без Godot, ~15 мин)
+#   tools/sandbox/build_engine.sh --core       # только ядро: 879 целей, 17 мин (замерено)
+#   tools/sandbox/build_engine.sh --quick      # ядро без 675 тестовых файлов, повторная сборка — секунды
 #   tools/sandbox/build_engine.sh --clean      # снести сборку и собрать заново
 #
 # ЧТО ЗДЕСЬ ВАЖНО (проверено на практике):
@@ -30,6 +31,7 @@ MODE="build"
 case "${1:-}" in
   --check) MODE="check" ;;
   --core)  MODE="core" ;;
+  --quick) MODE="quick" ;;
   --clean) MODE="clean" ;;
   "")      ;;
   *) die "неизвестный аргумент: $1" ;;
@@ -66,6 +68,10 @@ fi
 # ------------------------------------------------------------ конфигурация
 GODOT_FLAG=ON
 [ "$MODE" = "core" ] && GODOT_FLAG=OFF
+# --quick: the same as --core, plus no test executable. 675 test files are two thirds of the 2686 targets, and an edit inside a header rebuilds
+# them all: the code loop does not need them (run the tests of the CI build instead)
+TESTS_FLAG=ON
+[ "$MODE" = "quick" ] && { GODOT_FLAG=OFF; TESTS_FLAG=OFF; }
 
 if [ "$MODE" = "clean" ]; then
   say "снести $BUILD"
@@ -78,14 +84,18 @@ cmake -S "$SRC/engine" -B "$BUILD" -G Ninja \
       -DCMAKE_BUILD_TYPE=Release \
       -DOPENBFME_BUILD_GODOT="$GODOT_FLAG" \
       -DCMAKE_CXX_FLAGS="-include cstddef" \
+      -DOPENBFME_BUILD_TESTS="$TESTS_FLAG" \
       > "$BUILD/configure.log" 2>&1 || { tail -20 "$BUILD/configure.log"; die "конфигурация не прошла"; }
 ok "конфигурация готова"
 
 # ------------------------------------------------------------------ сборка
 TARGET=openbfme
 [ "$MODE" = "core" ] && TARGET=openbfme_core
+[ "$MODE" = "quick" ] && TARGET=openbfme_peer
 
-say "сборка $TARGET (это долго: 15-40 минут)"
+# the measured numbers (2 cores): --quick first build 17 min / 879 targets, --core 17 min, full 28 min / 2686 targets; after an edit of ONE .cpp
+# the same build takes 16 s, and almost all of it is the link, not the compile (a header parse is 1.8 s of a 1.9 s object)
+say "сборка $TARGET (-j$(nproc); первый раз это долго, потом секунды)"
 start=$(date +%s)
 ninja -C "$BUILD" "$TARGET" -j"$(nproc)" > "$BUILD/build.log" 2>&1
 rc=$?
