@@ -120,18 +120,24 @@ godot_run() {
 }
 
 # ------------------------------------------------------------- Blender (bpy)
-# download.blender.org недоступен, но bpy==4.5.3 есть на pypi: целый Blender
-# как модуль. Колесо требует CPython 3.11 и линкуется с X11/GL — стабы закрывают.
-# Версия по умолчанию — 5.0.1. Проверено: стабы X11 от 4.5.3 подходят к 5.0.1 без
-# изменений (те же libXrender.so.1 / libXfixes и т.д.), экспорт GLB с арматурой и
-# анимацией даёт ТОТ ЖЕ файл байт в байт (39 756 Б на тестовой сцене), и это
-# ближе к версии, которую vault закрепил для себя (5.3.0 на нативном Blender).
-# Откат: BPY_VERSION=4.5.3 tools/sandbox/bootstrap.sh
+# БЛЕНДЕР 5.0.1 — ЕДИНСТВЕННАЯ ВЕРСИЯ ЭТОГО ПРОЕКТА. Не «по умолчанию», а
+# закреплённая: колесо проверяется по SHA-256, и подмена версии не проскочит.
 #
-# ЧЕГО 5.0.1 НЕ ДАЁТ: рендера. Ни Workbench, ни Cycles — оба упираются в
-# libEGL.so.1, которой в песочнице нет и взять неоткуда (BLD-1, docs/BLENDER.md).
-# Модели и анимации делаются, картинки — нет; картинки рендерит Godot.
-BPY_VERSION="${BPY_VERSION:-5.0.1}"
+# Почему именно 5.0.1:
+#   - это последняя версия, собранная под CPython 3.11, а 3.11 — единственный
+#     Python в песочнице (3.13 взять неоткуда: python.org и GitHub Releases
+#     заблокированы, проверил uv и pbs-installer);
+#   - все три реальные модели vault (coin, rocket, safe) проходят на ней
+#     без потерь: GLB совпадает байт в байт с любым другим Blender;
+#   - стабы X11 подходят к ней как есть.
+#
+# ЧЕГО ОНА НЕ ДАЁТ: рендера. Ни Workbench, ни Cycles — оба требуют libEGL.so.1,
+# которой в песочнице нет и взять неоткуда (docs/BLENDER.md). Модели и анимации
+# делаются, картинки рендерит Godot (tools/vendor/godot, SwiftShader).
+BPY_VERSION="5.0.1"
+# SHA-256 manylinux-колеса bpy 5.0.1 (cp311, manylinux_2_28_x86_64), 374 257 847 Б.
+# PyPI отдаст другое колесо — установка остановится, подмена не проскочит.
+BPY_WHEEL_SHA256="79c6e421f53ea24a5961d86eefb8141798eee708682415eb4f5a952c2abdeb8b"
 install_bpy() {
   local venv="$WORK/bpyenv" stubs="$WORK/bpystubs"
   if [ -x "$venv/bin/python" ] && [ -f "$stubs/USE" ] \
@@ -139,10 +145,24 @@ install_bpy() {
     ok "Blender уже есть: $(LD_LIBRARY_PATH="$stubs" "$venv/bin/python" -c 'import bpy; print(bpy.app.version_string)')"; return
   fi
   [ "$CHECK" = 1 ] && { miss "нет bpy в $venv"; return; }
-  command -v python3.11 >/dev/null || { miss "нужен python3.11 (bpy 4.5.x только под cp311)"; return; }
+  command -v python3.11 >/dev/null || { miss "нужен python3.11 (bpy 5.x собран только под cp311)"; return; }
   say "Blender $BPY_VERSION как модуль bpy (~355 МБ, один раз)"
   python3.11 -m venv "$venv"
-  "$venv/bin/pip" -q install --disable-pip-version-check "bpy==$BPY_VERSION"
+  # закрепление по хешу: скачиваем колесо сами, сверяем и ставим файлом
+  local whl="$WORK/bpy-$BPY_VERSION.whl"
+  if ! "$venv/bin/pip" -q download --disable-pip-version-check --no-deps -d "$WORK/bpywheel" "bpy==$BPY_VERSION" 2>/dev/null; then
+    miss "не скачалось колесо bpy==$BPY_VERSION"; return
+  fi
+  whl=$(ls "$WORK"/bpywheel/bpy-"$BPY_VERSION"-*.whl 2>/dev/null | head -1)
+  [ -f "$whl" ] || { miss "колесо bpy==$BPY_VERSION не найдено после скачивания"; return; }
+  local got
+  got=$(python3 -c "import hashlib,sys; h=hashlib.sha256(); f=open(sys.argv[1],'rb'); [h.update(c) for c in iter(lambda: f.read(1<<20), b'')]; print(h.hexdigest())" "$whl")
+  if [ "$got" != "$BPY_WHEEL_SHA256" ]; then
+    miss "колесо bpy==$BPY_VERSION подменено: $got != $BPY_WHEEL_SHA256"; return
+  fi
+  ok "колесо сверено по SHA-256"
+  # ставим файлом (он проверен), зависимости — обычным путём с индекса
+  "$venv/bin/pip" -q install --disable-pip-version-check "$whl"
   local pkg
   pkg=$(ls -d "$venv"/lib/python*/site-packages/bpy | head -1)
   mkdir -p "$stubs"
