@@ -18,7 +18,7 @@ tools/sandbox/bootstrap.sh --check  # только проверить, что у
 |---|---|---|
 | Godot 4.7.2 + SwiftShader | `/tmp/godotbin` | движок; единственный рендер без GPU |
 | медиа-окружение | `/tmp/mediaenv` | Pillow + numpy для хромакея |
-| Blender 4.5.3 (bpy) | `/tmp/bpyenv` + стабы | 3D, рендер, W3D→glTF без установки Blender |
+| Blender 5.0.1 (bpy) | `/tmp/bpyenv` + стабы | 3D: модели, арматура, анимация, GLB (рендер — Godot) |
 
 ## Godot без GPU
 
@@ -29,17 +29,22 @@ Vulkan через SwiftShader** (CPU). Отсюда два жёстких пра
 - обязательны переменные из `bootstrap.sh`:
   `VK_ICD_FILENAMES=…/vk_swiftshader_icd.json` и `LD_LIBRARY_PATH=…/godotbin`.
 
-Источник Godot — `Creative36711/synapse`, `tools/godot/dist`: два xz-куска
-бинарника + SwiftShader. Хэши сверяются с `SHA256SUMS` перед распаковкой.
+Источник Godot — **сам репозиторий**: `tools/vendor/godot/` (две xz-части
+бинарника + SwiftShader + `SHA256SUMS`). Сеть при установке не нужна; хэши
+сверяются перед распаковкой.
 
 ## Blender как pip-модуль
 
 `download.blender.org` из песочницы недоступен, зато открыт `pypi.org`:
-`bpy==4.5.3` — это целый Blender 4.5.3 LTS как модуль (355 МБ, CPython 3.11).
+**`bpy==5.0.1`** — это целый Blender как модуль (374 МБ, CPython 3.11).
+Версия закреплена по SHA-256 колеса в `tools/sandbox/bootstrap.sh`.
 
 ```bash
 LD_LIBRARY_PATH=/tmp/bpystubs /tmp/bpyenv/bin/python your_script.py
 ```
+
+Рендер в Blender невозможен (нет `libEGL`), поэтому кадры рисует Godot.
+Подробности и цифры — `docs/BLENDER.md`.
 
 Колесо линкуется с X11/GL, которых в песочнице нет. `bpy_stubs.py` собирает
 пустые разделяемые библиотеки с нужными символами — этого достаточно, чтобы
