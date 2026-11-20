@@ -122,7 +122,16 @@ godot_run() {
 # ------------------------------------------------------------- Blender (bpy)
 # download.blender.org недоступен, но bpy==4.5.3 есть на pypi: целый Blender
 # как модуль. Колесо требует CPython 3.11 и линкуется с X11/GL — стабы закрывают.
-BPY_VERSION="${BPY_VERSION:-4.5.3}"
+# Версия по умолчанию — 5.0.1. Проверено: стабы X11 от 4.5.3 подходят к 5.0.1 без
+# изменений (те же libXrender.so.1 / libXfixes и т.д.), экспорт GLB с арматурой и
+# анимацией даёт ТОТ ЖЕ файл байт в байт (39 756 Б на тестовой сцене), и это
+# ближе к версии, которую vault закрепил для себя (5.3.0 на нативном Blender).
+# Откат: BPY_VERSION=4.5.3 tools/sandbox/bootstrap.sh
+#
+# ЧЕГО 5.0.1 НЕ ДАЁТ: рендера. Ни Workbench, ни Cycles — оба упираются в
+# libEGL.so.1, которой в песочнице нет и взять неоткуда (BLD-1, docs/BLENDER.md).
+# Модели и анимации делаются, картинки — нет; картинки рендерит Godot.
+BPY_VERSION="${BPY_VERSION:-5.0.1}"
 install_bpy() {
   local venv="$WORK/bpyenv" stubs="$WORK/bpystubs"
   if [ -x "$venv/bin/python" ] && [ -f "$stubs/USE" ] \
