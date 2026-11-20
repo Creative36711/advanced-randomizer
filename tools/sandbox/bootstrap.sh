@@ -10,6 +10,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
 WORK="${WORK:-/tmp}"
 CHECK=0
 [ "${1:-}" = "--check" ] && CHECK=1
@@ -32,29 +33,29 @@ install_toolchain() {
 }
 
 # ---------------------------------------------------------------- Godot 4.7.2
-# Источник — Creative36711/synapse, tools/godot/dist: два xz-куска + SwiftShader.
-# download.blender.org и release-assets недоступны, а codeload/api.github.com — да.
+# Источник — САМ РЕПОЗИТОРИЙ: tools/vendor/godot/. Три файла (две xz-части
+# бинарника и SwiftShader) плюс SHA256SUMS и VERSION лежат в git, поэтому сборка
+# не зависит ни от сети, ни от другого репозитория. Части склеиваются и
+# сверяются по хешу — см. install_godot ниже.
+#
+# Раньше здесь был Creative36711/synapse: это был просто склад готовых бинарников,
+# к движку OpenBFME он отношения не имеет. Файлы забраны оттуда ОДИН раз и
+# подписаны теми же sha256, что лежали в его SHA256SUMS.
 GODOT_DIR="$WORK/godotbin"
 GODOT_BIN="$GODOT_DIR/godot"
-SYNAPSE_REPO="${SYNAPSE_REPO:-Creative36711/synapse}"
-gh_blob() {  # owner/repo path dest
-  local api="https://api.github.com/repos/$1/contents/$2"
-  local sha
-  sha=$(curl -sSL "$api" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')
-  curl -sSL -H 'Accept: application/vnd.github.raw' \
-    "https://api.github.com/repos/$1/git/blobs/$sha" -o "$3"
-}
+GODOT_VENDOR="$REPO/tools/vendor/godot"
 install_godot() {
   if [ -x "$GODOT_BIN" ]; then ok "Godot уже есть: $($GODOT_BIN --version 2>/dev/null | tail -1)"; return; fi
   [ "$CHECK" = 1 ] && { miss "Godot нет ($GODOT_BIN)"; return; }
   mkdir -p "$GODOT_DIR"
-  say "Godot 4.7.2 + SwiftShader (~66 МБ)"
-  local base="tools/godot/dist"
-  gh_blob "$SYNAPSE_REPO" "$base/SHA256SUMS" "$GODOT_DIR/SHA256SUMS"
+  say "Godot 4.7.2 + SwiftShader из tools/vendor/godot (~66 МБ)"
+  [ -f "$GODOT_VENDOR/SHA256SUMS" ] || { miss "нет $GODOT_VENDOR/SHA256SUMS (клон неполный?)"; return; }
+  cp "$GODOT_VENDOR/SHA256SUMS" "$GODOT_DIR/SHA256SUMS"
+  cp "$GODOT_VENDOR/swiftshader-linux-x86_64.tar.xz" "$GODOT_DIR/" || return
   local part
   for part in 00 01; do
-    gh_blob "$SYNAPSE_REPO" "$base/godot-linux-x86_64.xz.part-$part" "$GODOT_DIR/part-$part.xz"
-    printf '    скачан кусок %s\n' "$part"
+    cp "$GODOT_VENDOR/godot-linux-x86_64.xz.part-$part" "$GODOT_DIR/part-$part.xz" || return
+    printf '    взят кусок %s из репозитория\n' "$part"
   done
   # SHA256SUMS подписывает три вещи: две части, склеенный .xz и распакованный
   # бинарник. Имена в файле не совпадают с нашими — сверяем по хешу.
